@@ -75,7 +75,7 @@ interface Submission {
 
 // Khởi tạo cơ sở dữ liệu rỗng chạy thật thực tế (Chỉ có thầy Nguyễn Trọng Nghĩa)
 let users: User[] = [
-  { id: "GV001", name: "Thầy Nguyễn Trọng Nghĩa", role: "Teacher", className: "ALL", password: "123456" }
+  { id: "admin", name: "Thầy Nguyễn Trọng Nghĩa", role: "Teacher", className: "ALL", password: "Nsg@2026" }
 ];
 
 let attendanceSessions: AttendanceSession[] = [];

@@ -32,7 +32,7 @@ function setupDatabase() {
     const sheet = ss.insertSheet("Users");
     sheet.appendRow(["Mã SV/GV", "Họ Tên", "Vai trò", "Mã Lớp"]);
     // Chỉ chèn Giảng viên chính thức
-    sheet.appendRow(["GV001", "Thầy Nguyễn Trọng Nghĩa", "Teacher", "ALL"]);
+    sheet.appendRow(["admin", "Thầy Nguyễn Trọng Nghĩa", "Teacher", "ALL"]);
   }
   
   // Tab AttendanceSessions
