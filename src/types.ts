@@ -40,6 +40,17 @@ export interface Submission {
   fileName: string;
   fileSize: string;
   fileData?: string;
+  fileId?: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  senderRole: "Student" | "Teacher" | "Admin";
+  content: string;
+  time: string;
+  imageUrl?: string;
 }
 
 export interface DatabaseState {
@@ -48,4 +59,5 @@ export interface DatabaseState {
   attendanceLogs: AttendanceLog[];
   assignments: Assignment[];
   submissions: Submission[];
+  chatMessages: ChatMessage[];
 }

@@ -1,8 +1,46 @@
-import React, { useState } from "react";
-import { Check, Copy, Code, FileCode, AppWindow, Database, RefreshCw, FolderGit } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Check, Copy, Code, FileCode, AppWindow, Database, RefreshCw, FolderGit, Save } from "lucide-react";
 
 export default function GoogleAppsScriptCode() {
   const [copiedType, setCopiedType] = useState<string | null>(null);
+  const [scriptUrl, setScriptUrl] = useState<string>("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  useEffect(() => {
+    // Tải cấu hình Web App URL từ express backend khi component mount
+    fetch("/api/config")
+      .then(res => res.json())
+      .then(data => {
+        if (data.googleScriptUrl) {
+          setScriptUrl(data.googleScriptUrl);
+        }
+      })
+      .catch(err => console.warn("Lỗi tải cấu hình API Script:", err));
+  }, []);
+
+  const handleSaveConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSaving(true);
+    setSaveStatus(null);
+    try {
+      const res = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: scriptUrl })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSaveStatus({ type: "success", text: "🎉 Đã kết nối và đồng bộ hai chiều thành công với Google Apps Script Web App và Google Sheets!" });
+      } else {
+        setSaveStatus({ type: "error", text: "Không thể lưu cấu hình mới." });
+      }
+    } catch (err: any) {
+      setSaveStatus({ type: "error", text: "Lỗi kết nối Server: " + err.message });
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   const copyToClipboard = (text: string, type: string) => {
     navigator.clipboard.writeText(text);
@@ -11,15 +49,15 @@ export default function GoogleAppsScriptCode() {
   };
 
   const codeGs = `/**
- * Hệ thống điểm danh và giao bài tập thông minh tích hợp Gemini AI
+ * Hệ thống điểm danh và giao bài tập thông minh lưu trữ G-Suite
  * Người phát triển: Thầy Nguyễn Trọng Nghĩa & Cộng sự
  * File: Code.gs - Code xử lý Backend chạy trên Google Apps Script
  */
 
 // Cấu hình ID của Google Sheet và Thư mục Google Drive lưu bài tập
 const SPREADSHEET_ID = "ĐIỀN_ID_GOOGLE_SHEETS_CỦA_BẠN_VÀO_ĐÂY";
-const DRIVE_FOLDER_ID = "ĐIỀN_ID_THƯ_MỤC_GOOGLE_DRIVE_CỦA_BẠN_VÀO_ĐÂY";
-const GEMINI_API_KEY = "ĐIỀN_API_KEY_GEMINI_CỦA_BẠN_VÀO_ĐÂY"; // Dùng cho phân tích chuyên cần tự động trên GAS
+const DRIVE_FOLDER_ID = "138c-CG-nB7YuXH4Dv-lvkJaI7s6C_7uD"; // Thư mục lưu trữ chính của hệ thống
+const GEMINI_API_KEY = "ĐIỀN_API_KEY_GEMINI_CỦA_BẠN_VÀO_ĐÂY";
 
 /**
  * 1. Khởi tạo toàn bộ các Sheet (Bảng) nếu chưa tồn tại
@@ -30,9 +68,8 @@ function setupDatabase() {
   // Tab Users
   if (!ss.getSheetByName("Users")) {
     const sheet = ss.insertSheet("Users");
-    sheet.appendRow(["Mã SV/GV", "Họ Tên", "Vai trò", "Mã Lớp"]);
-    // Chỉ chèn Giảng viên chính thức
-    sheet.appendRow(["admin", "Thầy Nguyễn Trọng Nghĩa", "Teacher", "ALL"]);
+    sheet.appendRow(["Mã SV/GV", "Họ Tên", "Vai trò", "Mã Lớp", "Mật Khẩu"]);
+    sheet.appendRow(["admin", "Thầy Nguyễn Trọng Nghĩa", "Teacher", "ALL", "Nsg@2026"]);
   }
   
   // Tab AttendanceSessions
@@ -56,14 +93,20 @@ function setupDatabase() {
   // Tab Submissions
   if (!ss.getSheetByName("Submissions")) {
     const sheet = ss.insertSheet("Submissions");
-    sheet.appendRow(["Mã Nộp Bài", "Mã Bài Tập", "Mã Sinh Viên", "Thời gian nộp", "Drive URL"]);
+    sheet.appendRow(["Mã Nộp Bài", "Mã Bài Tập", "Mã Sinh Viên", "Thời gian nộp", "Drive URL", "File ID"]);
+  }
+
+  // Tab ClassChat
+  if (!ss.getSheetByName("ClassChat")) {
+    const sheet = ss.insertSheet("ClassChat");
+    sheet.appendRow(["Mã Tin Nhắn", "Người gửi", "Tên người gửi", "Vai trò", "Nội dung", "Thời gian", "Ảnh URL"]);
   }
   
   Logger.log("Đã cấu trúc và khởi tạo cơ sở dữ liệu trên Google Sheets thành công.");
 }
 
 /**
- * 2. Hàm doGet xử lý hiển thị giao diện Frontend (Index.html)
+ * 2. Hàm doGet xử lý hiển thị giao diện Frontend (Index.html) khi truy cập trực tiếp Web App
  */
 function doGet(e) {
   const template = HtmlService.createTemplateFromFile("Index");
@@ -72,6 +115,183 @@ function doGet(e) {
     .setSandboxMode(HtmlService.SandboxMode.IFRAME)
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
     .addMetaTag("viewport", "width=device-width, initial-scale=1");
+}
+
+/**
+ * 2b. Hàm doPost tiếp nhận các API request dạng JSON từ Cloud Run / External Server (Node.js)
+ */
+function doPost(e) {
+  try {
+    var rawData = e.postData.contents;
+    var request = JSON.parse(rawData);
+    var action = request.action;
+    
+    var result = { success: false, error: "Hành động không hợp lệ" };
+    
+    if (action === "getAllData") {
+      result = getAllDataFromSheets();
+    } else if (action === "uploadAssignment") {
+      result = uploadAssignment(
+        request.studentId,
+        request.assignmentId,
+        request.fileName,
+        request.fileData
+      );
+    } else if (action === "getFileIdBySession") {
+      result = getFileIdBySession(request.fileId);
+    } else if (action === "submitAttendance") {
+      result = submitAttendance(request.studentId, request.code, request.gpsInfo);
+    } else if (action === "createAttendanceSession") {
+      result = createAttendanceSession(request.className, request.durationMinutes);
+    } else if (action === "createUser") {
+      result = createUser(request.user);
+    } else if (action === "deleteUser") {
+      result = deleteUser(request.id);
+    } else if (action === "createAssignment") {
+      result = createAssignment(request.assignment);
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify(result))
+      .setMimeType(ContentService.MimeType.JSON);
+    
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ success: false, error: "Lỗi Server Apps Script: " + err.toString() }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+/**
+ * Truy xuất toàn bộ dữ liệu từ các tab Google Sheets để đồng bộ trực tiếp với Node.js Server
+ */
+function getAllDataFromSheets() {
+  try {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    
+    // 1. Users
+    var userSheet = ss.getSheetByName("Users");
+    var users = [];
+    if (userSheet) {
+      var data = userSheet.getDataRange().getValues();
+      for (var i = 1; i < data.length; i++) {
+        if (data[i][0]) {
+          users.push({
+            id: data[i][0].toString().toUpperCase(),
+            name: data[i][1] ? data[i][1].toString() : "",
+            role: data[i][2] ? data[i][2].toString() : "Student",
+            className: data[i][3] ? data[i][3].toString() : "",
+            password: data[i][4] ? data[i][4].toString() : "123456"
+          });
+        }
+      }
+    }
+    
+    // 2. AttendanceSessions
+    var sessSheet = ss.getSheetByName("AttendanceSessions");
+    var sessions = [];
+    if (sessSheet) {
+      var data = sessSheet.getDataRange().getValues();
+      for (var i = 1; i < data.length; i++) {
+        if (data[i][0]) {
+          sessions.push({
+            id: data[i][0].toString(),
+            className: data[i][1] ? data[i][1].toString() : "",
+            code: data[i][2] ? data[i][2].toString() : "",
+            startTime: data[i][3] ? (typeof data[i][3] === "object" ? data[i][3].toISOString() : data[i][3].toString()) : "",
+            durationMinutes: 15,
+            date: data[i][5] ? data[i][5].toString() : "",
+            isActive: data[i][6] === "Active"
+          });
+        }
+      }
+    }
+    
+    // 3. AttendanceLogs
+    var logSheet = ss.getSheetByName("AttendanceLogs");
+    var logs = [];
+    if (logSheet) {
+      var data = logSheet.getDataRange().getValues();
+      for (var i = 1; i < data.length; i++) {
+        if (data[i][0]) {
+          logs.push({
+            id: data[i][0].toString(),
+            sessionId: data[i][1] ? data[i][1].toString() : "",
+            studentId: data[i][2] ? data[i][2].toString().toUpperCase() : "",
+            time: data[i][3] ? (typeof data[i][3] === "object" ? data[i][3].toISOString() : data[i][3].toString()) : "",
+            status: data[i][4] === "Muộn" ? "Muộn" : "Hợp lệ",
+            ip: data[i][5] ? data[i][5].toString() : "GAS-Gateway"
+          });
+        }
+      }
+    }
+    
+    // 4. Assignments
+    var asmSheet = ss.getSheetByName("Assignments");
+    var assignments = [];
+    if (asmSheet) {
+      var data = asmSheet.getDataRange().getValues();
+      for (var i = 1; i < data.length; i++) {
+        if (data[i][0]) {
+          assignments.push({
+            id: data[i][0].toString().toUpperCase(),
+            title: data[i][1] ? data[i][1].toString() : "",
+            content: data[i][2] ? data[i][2].toString() : "",
+            dueDate: data[i][3] ? data[i][3].toString() : ""
+          });
+        }
+      }
+    }
+    
+    // 5. Submissions
+    var subSheet = ss.getSheetByName("Submissions");
+    var submissions = [];
+    if (subSheet) {
+      var data = subSheet.getDataRange().getValues();
+      for (var i = 1; i < data.length; i++) {
+        if (data[i][0]) {
+          submissions.push({
+            id: data[i][0].toString(),
+            assignmentId: data[i][1] ? data[i][1].toString().toUpperCase() : "",
+            studentId: data[i][2] ? data[i][2].toString().toUpperCase() : "",
+            time: data[i][3] ? (typeof data[i][3] === "object" ? data[i][3].toISOString() : data[i][3].toString()) : "",
+            driveUrl: data[i][4] ? data[i][4].toString() : "",
+            fileId: data[i][5] ? data[i][5].toString() : ""
+          });
+        }
+      }
+    }
+
+    // 6. ClassChat
+    var chatSheet = ss.getSheetByName("ClassChat");
+    var chatMessages = [];
+    if (chatSheet) {
+      var chatData = chatSheet.getDataRange().getValues();
+      for (var i = 1; i < chatData.length; i++) {
+        if (chatData[i][0]) {
+          chatMessages.push({
+            id: chatData[i][0].toString(),
+            senderId: chatData[i][1] ? chatData[i][1].toString() : "",
+            senderName: chatData[i][2] ? chatData[i][2].toString() : "",
+            senderRole: chatData[i][3] ? chatData[i][3].toString() : "Student",
+            content: chatData[i][4] ? chatData[i][4].toString() : "",
+            time: chatData[i][5] ? (typeof chatData[i][5] === "object" ? chatData[i][5].toISOString() : chatData[i][5].toString()) : "",
+            imageUrl: chatData[i][6] ? chatData[i][6].toString() : ""
+          });
+        }
+      }
+    }
+    
+    return {
+      success: true,
+      users: users,
+      attendanceSessions: sessions,
+      attendanceLogs: logs,
+      assignments: assignments,
+      submissions: submissions,
+      chatMessages: chatMessages
+    };
+  } catch (err) {
+    return { success: false, error: err.toString() };
+  }
 }
 
 /**
@@ -126,7 +346,7 @@ function submitAttendance(studentId, code, gpsInfo) {
     let studentClass = "";
     let studentExist = false;
     for (let i = 1; i < users.length; i++) {
-      if (users[i][0] === studentId) {
+      if (users[i][0].toString().toLowerCase() === studentId.toString().toLowerCase()) {
         studentExist = true;
         studentClass = users[i][3];
         break;
@@ -167,7 +387,7 @@ function submitAttendance(studentId, code, gpsInfo) {
     const logSheet = ss.getSheetByName("AttendanceLogs");
     const logs = logSheet.getDataRange().getValues();
     for (let k = 1; k < logs.length; k++) {
-      if (logs[k][1] === activeSession.id && logs[k][2] === studentId) {
+      if (logs[k][1] === activeSession.id && logs[k][2].toString().toLowerCase() === studentId.toString().toLowerCase()) {
         return { success: false, message: "Bạn đã điểm danh thành công ở phiên này từ trước đó!" };
       }
     }
@@ -184,7 +404,7 @@ function submitAttendance(studentId, code, gpsInfo) {
     logSheet.appendRow([
       logId,
       activeSession.id,
-      studentId,
+      studentId.toUpperCase(),
       now.toISOString(),
       status,
       "GAS-IP-Gateway",
@@ -198,11 +418,13 @@ function submitAttendance(studentId, code, gpsInfo) {
 }
 
 /**
- * 5. Luồng Sinh viên nộp bài tập và Lưu trữ trực tiếp lên Google Drive
+ * 5. Luồng Sinh viên nộp bài tập và Lưu trữ trực tiếp lên Google Drive Folder chính chủ của Thầy
  */
 function uploadAssignment(studentId, assignmentId, fileName, base64Data) {
   try {
-    const parentFolder = DriveApp.getFolderById(DRIVE_FOLDER_ID);
+    // Luôn sử dụng Folder ID chỉ định từ yêu cầu để tránh lưu sai thư mục
+    const folderId = "138c-CG-nB7YuXH4Dv-lvkJaI7s6C_7uD";
+    const parentFolder = DriveApp.getFolderById(folderId);
     
     // Tách base64 data thực tế khỏi header mimetype của File
     const contentParts = base64Data.split(",");
@@ -218,10 +440,11 @@ function uploadAssignment(studentId, assignmentId, fileName, base64Data) {
     
     const blob = Utilities.newBlob(Utilities.base64Decode(actualData), contentType, fileName);
     
-    // Tạo file trực tiếp trên Google Drive lưu trữ G-Suite nâng cao
+    // Tạo file trực tiếp trên Google Drive lưu trữ và phân quyền xem
     const driveFile = parentFolder.createFile(blob);
     driveFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
     const fileUrl = driveFile.getUrl();
+    const fileId = driveFile.getId();
     
     // Ghi nhận vào Google Sheets (Bảng Submissions)
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
@@ -230,12 +453,10 @@ function uploadAssignment(studentId, assignmentId, fileName, base64Data) {
     const now = new Date();
     const submissionId = "SUB" + now.getTime().toString().substring(6);
     
-    // Kiểm tra xem đã nộp trước đó thì đè hay chèn mới? 
-    // Logic này sẽ tìm nộp cũ và cập nhật đường dẫn nếu sinh viên nộp lại
     const data = subSheet.getDataRange().getValues();
     let existingIndex = -1;
     for (let i = 1; i < data.length; i++) {
-      if (data[i][1] === assignmentId && data[i][2] === studentId) {
+      if (data[i][1].toString().toUpperCase() === assignmentId.toString().toUpperCase() && data[i][2].toString().toLowerCase() === studentId.toString().toLowerCase()) {
         existingIndex = i + 1;
         break;
       }
@@ -245,25 +466,187 @@ function uploadAssignment(studentId, assignmentId, fileName, base64Data) {
       // Cập nhật đè dòng cũ
       subSheet.getRange(existingIndex, 4).setValue(now.toISOString());
       subSheet.getRange(existingIndex, 5).setValue(fileUrl);
+      subSheet.getRange(existingIndex, 6).setValue(fileId);
     } else {
       // Chèn dòng mới
       subSheet.appendRow([
         submissionId,
-        assignmentId,
-        studentId,
+        assignmentId.toUpperCase(),
+        studentId.toUpperCase(),
         now.toISOString(),
-        fileUrl
+        fileUrl,
+        fileId
       ]);
     }
     
-    return { success: true, fileUrl: fileUrl, message: "Hệ thống đã nộp bài vào Google Drive và ghi sổ điểm danh thành công!" };
+    return { 
+      success: true, 
+      fileId: fileId,
+      fileUrl: fileUrl, 
+      message: "Hệ thống đã nộp bài vào Google Drive và ghi sổ điểm danh thành công!" 
+    };
   } catch (err) {
     return { success: false, error: err.toString() };
   }
 }
 
 /**
- * 6. Tích hợp AI Core gọi Gemini thông qua UrlFetchApp để Phân tích tình hình lớp
+ * 6. Truy vấn chính xác fileId từ Google Sheets bằng cách khớp mã
+ */
+function getFileIdBySession(fileId) {
+  try {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const subSheet = ss.getSheetByName("Submissions");
+    if (!subSheet) return { success: true, fileId: fileId };
+    
+    const data = subSheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      const currentFileId = data[i][5] ? data[i][5].toString() : "";
+      const currentDriveUrl = data[i][4] ? data[i][4].toString() : "";
+      
+      if (currentFileId === fileId || currentDriveUrl.indexOf(fileId) > -1) {
+        return { success: true, fileId: currentFileId };
+      }
+    }
+    return { success: true, fileId: fileId };
+  } catch (err) {
+    return { success: false, error: err.toString() };
+  }
+}
+
+/**
+ * Thêm thành viên mới dạng Sinh viên/Giảng viên vào Google Sheets
+ */
+function createUser(user) {
+  try {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const sheet = ss.getSheetByName("Users");
+    if (!sheet) return { success: false, error: "Không tìm thấy bảng Users" };
+    
+    // Kiểm tra trùng ID
+    const data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][0] && data[i][0].toString().toUpperCase() === user.id.toUpperCase()) {
+        return { success: false, error: "Mã tài khoản đã tồn tại trên Sheet!" };
+      }
+    }
+    
+    sheet.appendRow([
+      user.id.toUpperCase(),
+      user.name,
+      user.role || "Student",
+      user.className,
+      user.password
+    ]);
+    return { success: true, message: "Đã thêm thành viên mới" };
+  } catch (err) {
+    return { success: false, error: err.toString() };
+  }
+}
+
+/**
+ * Xóa thành viên khỏi danh sách lớp trên Google Sheets
+ */
+function deleteUser(userId) {
+  try {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const sheet = ss.getSheetByName("Users");
+    if (!sheet) return { success: false, error: "Không tìm thấy bảng Users" };
+    
+    const data = sheet.getDataRange().getValues();
+    var indexToDelete = -1;
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][0] && data[i][0].toString().toUpperCase() === userId.toUpperCase()) {
+        indexToDelete = i + 1;
+        break;
+      }
+    }
+    
+    if (indexToDelete > -1) {
+      if (data[indexToDelete - 1][2] === "Teacher") {
+        return { success: false, error: "Không thể xóa tài khoản Giảng viên!" };
+      }
+      sheet.deleteRow(indexToDelete);
+      return { success: true, message: "Đã xóa thành công khỏi Sheet" };
+    }
+    return { success: false, error: "Không tìm thấy tài khoản trên Sheet" };
+  } catch (err) {
+    return { success: false, error: err.toString() };
+  }
+}
+
+/**
+ * Thêm nhiệm vụ bài tập mới vào Google Sheets
+ */
+function createAssignment(asm) {
+  try {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const sheet = ss.getSheetByName("Assignments");
+    if (!sheet) return { success: false, error: "Không tìm thấy bảng Assignments" };
+    
+    const data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][0] && data[i][0].toString().toUpperCase() === asm.id.toUpperCase()) {
+        return { success: false, error: "Mã nhiệm vụ đã tồn tại!" };
+      }
+    }
+    
+    sheet.appendRow([
+      asm.id.toUpperCase(),
+      asm.title,
+      asm.content,
+      asm.dueDate
+    ]);
+    return { success: true, message: "Đã thêm nhiệm vụ mới vào Sheet" };
+  } catch (err) {
+    return { success: false, error: err.toString() };
+  }
+}
+
+/**
+ * Thêm tin nhắn chat lớp và lưu ảnh đính kèm (nếu có) lên Google Drive
+ */
+function sendChatMessage(senderId, senderName, senderRole, content, fileName, base64Data) {
+  try {
+    var imageUrl = "";
+    if (base64Data && fileName) {
+      // Lưu ảnh đính kèm vào Google Drive
+      const folderId = DRIVE_FOLDER_ID || "138c-CG-nB7YuXH4Dv-lvkJaI7s6C_7uD";
+      const parentFolder = DriveApp.getFolderById(folderId);
+      const contentParts = base64Data.split(",");
+      const contentType = contentParts[0].match(/:(.*?);/)[1];
+      const actualData = contentParts[1];
+      const blob = Utilities.newBlob(Utilities.base64Decode(actualData), contentType, fileName);
+      const driveFile = parentFolder.createFile(blob);
+      driveFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      imageUrl = driveFile.getUrl();
+    }
+    
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const sheet = ss.getSheetByName("ClassChat");
+    if (!sheet) return { success: false, error: "Không tìm thấy bảng ClassChat" };
+    
+    const now = new Date();
+    const chatMsgId = "MSG" + now.getTime().toString().substring(5);
+    
+    sheet.appendRow([
+      chatMsgId,
+      senderId.toUpperCase(),
+      senderName,
+      senderRole,
+      content,
+      now.toISOString(),
+      imageUrl
+    ]);
+    
+    return { success: true, messageId: chatMsgId, imageUrl: imageUrl };
+  } catch (err) {
+    return { success: false, error: err.toString() };
+  }
+}
+
+/**
+ * 7. Tích hợp AI Core gọi Gemini thông qua UrlFetchApp để Phân tích tình hình lớp
  */
 function analyzeClassDataWithAI() {
   try {
@@ -484,6 +867,73 @@ function analyzeClassDataWithAI() {
 
   return (
     <div className="space-y-6" id="gas-guide-section">
+      {/* KHU VỰC CẤU HÌNH LIÊN KẾT GOOGLE WORKSPACE CHUYÊN NGHIỆP */}
+      <div className="bg-gradient-to-r from-indigo-900 to-slate-900 rounded-3xl p-6 md:p-8 text-white shadow-lg border border-indigo-800">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="space-y-2 max-w-2xl">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/20 border border-indigo-400/30 text-indigo-300 text-xs font-semibold">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              Đồng bộ dữ liệu hai chiều
+            </div>
+            <h3 className="text-2xl font-bold font-sans tracking-tight">Cấu hình liên kết Google Apps Script</h3>
+            <p className="text-sm text-indigo-200/80 leading-relaxed">
+              Dán URL Ứng dụng Web (Web App URL) được cấp sau khi bạn triển khai thành công mã nguồn Apps Script ở bên dưới để kết nối hệ thống này trực tiếp với Google Drive và Google Sheets thật.
+            </p>
+          </div>
+          
+          <div className="flex-shrink-0">
+            {scriptUrl ? (
+              <div className="px-4 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-mono font-medium">
+                ● ĐÃ KẾT NỐI GOOGLE WORKSPACE
+              </div>
+            ) : (
+              <div className="px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-mono font-medium">
+                ○ CHẾ ĐỘ MÔ PHỎNG (Sử dụng RAM)
+              </div>
+            )}
+          </div>
+        </div>
+
+        <form onSubmit={handleSaveConfig} className="mt-6 flex flex-col sm:flex-row gap-3">
+          <div className="relative flex-1">
+            <input
+              type="url"
+              placeholder="https://script.google.com/macros/s/AKfycb.../exec"
+              value={scriptUrl}
+              onChange={(e) => setScriptUrl(e.target.value)}
+              className="w-full h-11 pl-4 pr-4 rounded-xl bg-slate-950/40 border border-indigo-700/50 text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-mono"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={isSaving}
+            className="h-11 px-6 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-medium text-sm transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 active:scale-95"
+          >
+            {isSaving ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                Đang thiết lập...
+              </>
+            ) : (
+              <>
+                <Save className="w-4 h-4" />
+                Lưu cấu hình
+              </>
+            )}
+          </button>
+        </form>
+
+        {saveStatus && (
+          <div className={`mt-4 p-3.5 rounded-xl text-xs font-medium border ${
+            saveStatus.type === "success" 
+              ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" 
+              : "bg-rose-500/10 border-rose-500/20 text-rose-400"
+          }`}>
+            {saveStatus.text}
+          </div>
+        )}
+      </div>
+
       <div className="bg-white rounded-3xl border border-slate-100 p-6 md:p-8 shadow-sm">
         <h2 className="text-2xl font-bold font-sans text-slate-800 tracking-tight flex items-center gap-3">
           <FolderGit className="w-7 h-7 text-indigo-600" />

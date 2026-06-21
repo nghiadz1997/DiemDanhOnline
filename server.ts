@@ -71,6 +71,17 @@ interface Submission {
   fileName: string; // Tên tệp
   fileSize: string; // Dung lượng tệp
   fileData?: string; // Base64 tệp tin thực tế nộp lên
+  fileId?: string; // Mã File ID gán từ Google Sheets và Google Drive
+}
+
+interface ChatMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  senderRole: "Student" | "Teacher" | "Admin";
+  content: string;
+  time: string;
+  imageUrl?: string;
 }
 
 // Khởi tạo cơ sở dữ liệu rỗng chạy thật thực tế (Chỉ có thầy Nguyễn Trọng Nghĩa)
@@ -82,19 +93,96 @@ let attendanceSessions: AttendanceSession[] = [];
 let attendanceLogs: AttendanceLog[] = [];
 let assignments: Assignment[] = [];
 let submissions: Submission[] = [];
+let chatMessages: ChatMessage[] = [
+  {
+    id: "MSG_INIT_1",
+    senderId: "ADMIN",
+    senderName: "Thầy Nguyễn Trọng Nghĩa",
+    senderRole: "Teacher",
+    content: "Chào mừng cả lớp đến với nhóm chat chung! Nơi các em có thể hỏi bài học, trao đổi học thuật, và gửi trực tiếp hình ảnh bài tập/góp ý cho Thầy hoặc các bạn nhé. Chúc các em học tập vui vẻ! 🎯📚",
+    time: new Date(Date.now() - 3600 * 1000 * 2).toISOString() // 2 hours ago
+  }
+];
+
+let googleScriptUrl = process.env.GOOGLE_SCRIPT_URL || "";
+
+// Đồng bộ hóa với Google Sheets qua Google Apps Script Web App
+async function syncFromGoogleSheets() {
+  if (!googleScriptUrl) return;
+  try {
+    const res = await fetch(googleScriptUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "getAllData" })
+    });
+    if (res.ok) {
+      const data: any = await res.json();
+      if (data && data.success) {
+        if (data.users && data.users.length > 0) {
+          users = data.users;
+        }
+        if (data.attendanceSessions) {
+          attendanceSessions = data.attendanceSessions;
+        }
+        if (data.attendanceLogs) {
+          attendanceLogs = data.attendanceLogs;
+        }
+        if (data.assignments) {
+          assignments = data.assignments;
+        }
+        if (data.submissions) {
+          submissions = data.submissions.map((s: any) => ({
+            id: s.id,
+            assignmentId: s.assignmentId,
+            studentId: s.studentId,
+            time: s.time,
+            fileName: s.fileName || "Tài liệu nộp bài.docx",
+            fileSize: s.fileSize || "2.1 MB",
+            fileId: s.fileId,
+            driveUrl: s.fileId ? `/api/submissions/download/${s.fileId}` : (s.driveUrl || "")
+          }));
+        }
+        if (data.chatMessages && data.chatMessages.length > 0) {
+          chatMessages = data.chatMessages;
+        }
+        console.log("Successfully synchronized database with Google Sheets!");
+      }
+    }
+  } catch (err) {
+    console.warn("Failed to sync from Google Sheets:", err);
+  }
+}
 
 // ==========================================
 // CÁC ENDPOINT API HỆ THỐNG
 // ==========================================
 
+// Endpoint để quản lý cấu hình Google Apps Script URL
+app.get("/api/config", (req, res) => {
+  res.json({ googleScriptUrl });
+});
+
+app.post("/api/config", async (req, res) => {
+  const { url } = req.body;
+  googleScriptUrl = url || "";
+  if (googleScriptUrl) {
+    await syncFromGoogleSheets();
+  }
+  res.json({ success: true, googleScriptUrl });
+});
+
 // 1. Lấy toàn bộ dữ liệu hiện tại
-app.get("/api/data", (req, res) => {
+app.get("/api/data", async (req, res) => {
+  if (googleScriptUrl) {
+    await syncFromGoogleSheets();
+  }
   res.json({
     users,
     attendanceSessions,
     attendanceLogs,
     assignments,
-    submissions
+    submissions,
+    chatMessages
   });
 });
 
@@ -201,16 +289,6 @@ app.post("/api/attendance/submit", (req, res) => {
   attendanceLogs.push(newLog);
 
   // TÍNH LÀ CÓ ĐI HỌC VÀ CÓ LÀM BÀI: Tự động tạo Submission cho sinh viên đối với toàn bộ bài tập đang có nếu chưa nộp
-  if (assignments.length === 0) {
-    // Nếu chưa có bài tập nào, tự thêm sẵn 1 Bài tập chuyên cần mẫu để ghi nhận hoàn thành
-    assignments.push({
-      id: "ASM-CHUYENCAN",
-      title: "Bài tập thực hành & Chuyên cần tại lớp",
-      content: "Hệ thống tự động ghi nhận hoàn thành bài tập thực hành dành cho sinh viên tham gia đầy đủ và tích cực tương tác.",
-      dueDate: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().split("T")[0] + "T23:59"
-    });
-  }
-
   assignments.forEach(asm => {
     const alreadySubmitted = submissions.some(s => s.assignmentId === asm.id && s.studentId.toLowerCase() === studentId.toLowerCase());
     if (!alreadySubmitted) {
@@ -232,7 +310,7 @@ app.post("/api/attendance/submit", (req, res) => {
 });
 
 // 4. Giao bài tập mới (Vai trò Giáo viên)
-app.post("/api/assignment/create", (req, res) => {
+app.post("/api/assignment/create", async (req, res) => {
   const { id, title, content, dueDate } = req.body;
   if (!title || !content || !dueDate) {
     return res.status(400).json({ error: "Thiếu thông tin giao bài tập" });
@@ -255,22 +333,103 @@ app.post("/api/assignment/create", (req, res) => {
     dueDate
   };
 
+  if (googleScriptUrl) {
+    try {
+      const gasRes = await fetch(googleScriptUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "createAssignment",
+          assignment: newAsm
+        })
+      });
+      if (gasRes.ok) {
+        const gasData: any = await gasRes.json();
+        if (gasData && gasData.success === false) {
+          return res.status(400).json({ error: gasData.error || "Ghi nhận bài tập vào Google Sheets thất bại" });
+        }
+      }
+    } catch (err: any) {
+      console.warn("Ghi nhận bài tập vào Google Sheets thất bại:", err);
+    }
+  }
+
   assignments.unshift(newAsm);
   res.json({ success: true, assignment: newAsm });
 });
 
-// 5. Nộp bài tập THẬT lưu trữ Base64 để Giảng viên xem & tải (Vai trò Sinh viên)
-app.post("/api/assignment/submit", (req, res) => {
+// 5. Nộp bài tập THẬT qua Google Apps Script Web App để lưu vào Google Drive và ghi vào Google Sheets
+app.post("/api/assignment/submit", async (req, res) => {
   const { studentId, assignmentId, fileName, fileData } = req.body; // fileData là base64 tệp
   if (!studentId || !assignmentId || !fileName) {
     return res.status(400).json({ error: "Thiếu thông tin nộp bài" });
   }
 
-  // Sinh mã thư mục Google Drive ngẫu nhiên để minh chứng
+  // Khúc này không được lưu file vào local filesystem hoặc thư mục uploads.
+  // Mọi file upload phải được gửi tới Google Apps Script Web App, lưu vào Google Drive Folder ID 138c-CG-nB7YuXH4Dv-lvkJaI7s6C_7uD.
+
+  if (googleScriptUrl) {
+    try {
+      console.log("Đang tải dữ liệu tệp lên Google Apps Script Web App...");
+      const gasResponse = await fetch(googleScriptUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "uploadAssignment",
+          studentId: studentId.toUpperCase(),
+          assignmentId: assignmentId.toUpperCase(),
+          fileName,
+          fileData,
+          folderId: "138c-CG-nB7YuXH4Dv-lvkJaI7s6C_7uD"
+        })
+      });
+
+      if (!gasResponse.ok) {
+        throw new Error(`Google Apps Script trả về status code ${gasResponse.status}`);
+      }
+
+      const gasData: any = await gasResponse.json();
+      if (gasData && gasData.success) {
+        const fileId = gasData.fileId;
+        const fileUrl = gasData.fileUrl;
+
+        // Lưu bản dịch tạm vào RAM để hiển thị tức thì cho Admin xem
+        const subId = `SUB${String(submissions.length + 1).padStart(3, "0")}`;
+        const newSub: Submission = {
+          id: subId,
+          assignmentId: assignmentId.toUpperCase(),
+          studentId: studentId.toUpperCase(),
+          time: new Date().toISOString(),
+          driveUrl: `/api/submissions/download/${fileId}`,
+          fileName,
+          fileSize: req.body.fileSize || "1.5 MB",
+          fileId: fileId,
+          fileData: fileData // Giữ base64 trong RAM để cho phép xem trước trực quan (ví dụ: file ảnh)
+        };
+
+        const existingSubIndex = submissions.findIndex(
+          s => s.assignmentId === assignmentId.toUpperCase() && s.studentId.toLowerCase() === studentId.toLowerCase()
+        );
+
+        if (existingSubIndex >= 0) {
+          submissions[existingSubIndex] = newSub;
+        } else {
+          submissions.push(newSub);
+        }
+
+        return res.json({ success: true, submission: newSub });
+      } else {
+        return res.status(500).json({ error: gasData?.error || "Apps Script báo lỗi không thể lưu tệp" });
+      }
+    } catch (err: any) {
+      console.error("Lỗi gửi file tới Google Apps Script:", err);
+      return res.status(500).json({ error: `Kết nối Google Apps Script thất bại: ${err.message}` });
+    }
+  }
+
+  // Chế độ Offline Fallback khi chưa cấu hình Google Apps Script Web App URL
   const fileId = "drive_file_" + Math.random().toString(36).substring(2, 10);
   const driveUrl = `/api/submissions/download/${fileId}`;
-
-  // Kiểm tra xem đã nộp bài tập này chưa
   const existingSubIndex = submissions.findIndex(s => s.assignmentId === assignmentId && s.studentId.toLowerCase() === studentId.toLowerCase());
 
   const newSub: Submission = {
@@ -281,6 +440,7 @@ app.post("/api/assignment/submit", (req, res) => {
     driveUrl,
     fileName,
     fileSize: req.body.fileSize || "2.1 MB",
+    fileId: fileId,
     fileData: fileData // Lưu trữ nội dung Base64 thực tế trong RAM
   };
 
@@ -293,40 +453,70 @@ app.post("/api/assignment/submit", (req, res) => {
   res.json({ success: true, submission: newSub });
 });
 
-// Endpoint tải file nộp bài cho Giảng viên / Admin mở xem thực tế
-app.get("/api/submissions/download/:fileId", (req, res) => {
+// Endpoint tải file nộp bài lấy fileId từ Google Sheets thông qua Apps Script và chuyển hướng đến Google Drive
+app.get("/api/submissions/download/:fileId", async (req, res) => {
   const fileId = req.params.fileId;
-  // Tìm submission có đường dẫn chứa fileId này
-  const sub = submissions.find(s => s.driveUrl.includes(fileId));
-  if (!sub || !sub.fileData) {
-    return res.status(404).send("<h3>Không tìm thấy dữ liệu tệp nộp bài trong hệ thống hoặc tệp đã bị xóa.</h3>");
-  }
+  let targetFileId = fileId;
 
-  try {
-    const dataUrlPattern = /^data:([^;]+);base64,(.+)$/;
-    const matches = sub.fileData.match(dataUrlPattern);
-
-    if (matches && matches.length === 3) {
-      const contentType = matches[1];
-      const base64Data = matches[2];
-      const buffer = Buffer.from(base64Data, 'base64');
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(sub.fileName)}"`);
-      return res.send(buffer);
-    } else {
-      // Trả file nhị phân thô nếu không chứa header data url
-      const buffer = Buffer.from(sub.fileData, 'base64');
-      res.setHeader('Content-Type', 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(sub.fileName)}"`);
-      return res.send(buffer);
+  // Nếu đã cấu hình Web App URL, thực hiện lấy fileId chuẩn xác từ Google Sheets để đồng bộ hoàn toàn
+  if (googleScriptUrl && !fileId.startsWith("drive_file_") && !fileId.startsWith("offline_") && !fileId.startsWith("auto_")) {
+    try {
+      console.log(`Lấy chính xác fileId cho tệp ${fileId} từ Google Sheets...`);
+      const gasResponse = await fetch(googleScriptUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "getFileIdBySession",
+          fileId: fileId
+        })
+      });
+      if (gasResponse.ok) {
+        const gasData: any = await gasResponse.json();
+        if (gasData && gasData.success && gasData.fileId) {
+          targetFileId = gasData.fileId;
+        }
+      }
+    } catch (err) {
+      console.warn("Không lấy được thông tin fileId từ Google Sheets, sử dụng tham số mặc định.", err);
     }
-  } catch (err: any) {
-    res.status(500).send("Lỗi xử lý file: " + err.message);
   }
+
+  // Trả link tải Google Drive (Redirect sang direct download URL của Google Drive)
+  // Nếu là file mock thì trả về dữ liệu Base64 cũ nếu có, hoặc chuyển hướng tải Drive
+  if (targetFileId.startsWith("drive_file_") || targetFileId.startsWith("offline_") || targetFileId.startsWith("auto_")) {
+    const sub = submissions.find(s => s.driveUrl.includes(fileId));
+    if (sub && sub.fileData) {
+      try {
+        const dataUrlPattern = /^data:([^;]+);base64,(.+)$/;
+        const matches = sub.fileData.match(dataUrlPattern);
+
+        if (matches && matches.length === 3) {
+          const contentType = matches[1];
+          const base64Data = matches[2];
+          const buffer = Buffer.from(base64Data, 'base64');
+          res.setHeader('Content-Type', contentType);
+          res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(sub.fileName)}"`);
+          return res.send(buffer);
+        } else {
+          const buffer = Buffer.from(sub.fileData, 'base64');
+          res.setHeader('Content-Type', 'application/octet-stream');
+          res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(sub.fileName)}"`);
+          return res.send(buffer);
+        }
+      } catch (err: any) {
+        return res.status(500).send("Lỗi xử lý file offline: " + err.message);
+      }
+    }
+    return res.status(404).send("<h3>Không tìm thấy dữ liệu tệp nộp bài offline. Vui lòng kết nối Apps Script và nộp bài thật.</h3>");
+  }
+
+  const driveDownloadUrl = `https://drive.google.com/uc?export=download&id=${targetFileId}`;
+  console.log(`Đang chuyển hướng sang Google Drive tải tệp: ${driveDownloadUrl}`);
+  res.redirect(driveDownloadUrl);
 });
 
 // API Đăng ký tài khoản Sinh viên mới (Chạy Thật)
-app.post("/api/register", (req, res) => {
+app.post("/api/register", async (req, res) => {
   const { id, name, className, password } = req.body;
   if (!id || !name || !className || !password) {
     return res.status(400).json({ success: false, error: "Vui lòng nhập đầy đủ các trường tuyển sinh!" });
@@ -346,12 +536,33 @@ app.post("/api/register", (req, res) => {
     password: String(password).trim()
   };
 
+  if (googleScriptUrl) {
+    try {
+      const gasRes = await fetch(googleScriptUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "createUser",
+          user: newUser
+        })
+      });
+      if (gasRes.ok) {
+        const gasData: any = await gasRes.json();
+        if (gasData && gasData.success === false) {
+          return res.status(400).json({ success: false, error: gasData.error || "Ghi nhận vào Google Sheets thất bại" });
+        }
+      }
+    } catch (err: any) {
+      console.warn("Ghi nhận đăng ký vào Google Sheets thất bại:", err);
+    }
+  }
+
   users.push(newUser);
   res.json({ success: true, user: newUser });
 });
 
 // API Thêm học sinh từ Dashboard Quản lý Giáo viên
-app.post("/api/users/create", (req, res) => {
+app.post("/api/users/create", async (req, res) => {
   const { id, name, role, className, password } = req.body;
   if (!id || !name || !className || !password) {
     return res.status(400).json({ error: "Vui lòng điền đầy đủ Mã tài khoản, Họ Tên, Mật khẩu & Lớp học!" });
@@ -371,12 +582,33 @@ app.post("/api/users/create", (req, res) => {
     password: String(password).trim()
   };
 
+  if (googleScriptUrl) {
+    try {
+      const gasRes = await fetch(googleScriptUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "createUser",
+          user: newUser
+        })
+      });
+      if (gasRes.ok) {
+        const gasData: any = await gasRes.json();
+        if (gasData && gasData.success === false) {
+          return res.status(400).json({ error: gasData.error || "Ghi nhận vào Google Sheets thất bại" });
+        }
+      }
+    } catch (err: any) {
+      console.warn("Ghi nhận người dùng vào Google Sheets thất bại:", err);
+    }
+  }
+
   users.push(newUser);
   res.json({ success: true, user: newUser });
 });
 
 // API Xóa tài khoản học sinh
-app.delete("/api/users/delete/:id", (req, res) => {
+app.delete("/api/users/delete/:id", async (req, res) => {
   const { id } = req.params;
   const index = users.findIndex(u => u.id.toUpperCase() === id.toUpperCase());
   if (index === -1) {
@@ -385,6 +617,27 @@ app.delete("/api/users/delete/:id", (req, res) => {
 
   if (users[index].role === "Teacher") {
     return res.status(400).json({ error: "Không thể xóa tài khoản Giảng viên!" });
+  }
+
+  if (googleScriptUrl) {
+    try {
+      const gasRes = await fetch(googleScriptUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "deleteUser",
+          id: id
+        })
+      });
+      if (gasRes.ok) {
+        const gasData: any = await gasRes.json();
+        if (gasData && gasData.success === false) {
+          return res.status(400).json({ error: gasData.error || "Xóa trên Google Sheets thất bại" });
+        }
+      }
+    } catch (err: any) {
+      console.warn("Xóa thành viên trên Google Sheets thất bại:", err);
+    }
   }
 
   users.splice(index, 1);
@@ -611,6 +864,150 @@ Câu hỏi mới nhất của Sinh viên: ${lastMessage}
     console.error("Lỗi khi chat với Gemini API:", error);
     res.status(500).json({ error: "Lỗi kết nối AI Core: " + error.message });
   }
+});
+
+// Gửi tin nhắn vào Nhóm chat lớp và tích hợp phản hồi AI thông minh khi được tag
+app.post("/api/chat/send", async (req, res) => {
+  const { senderId, senderName, senderRole, content, fileName, fileData } = req.body;
+  
+  if (!senderId || !senderName) {
+    return res.status(400).json({ error: "Thiếu thông tin người gửi" });
+  }
+
+  const now = new Date();
+  const chatMsgId = "MSG_" + now.getTime().toString();
+  
+  let imageUrl = "";
+  if (fileData && fileName) {
+    imageUrl = fileData; // Lưu tạm dữ liệu base64 cục bộ
+  }
+
+  const newMsg: ChatMessage = {
+    id: chatMsgId,
+    senderId,
+    senderName,
+    senderRole: senderRole || "Student",
+    content: content || "",
+    time: now.toISOString(),
+    imageUrl
+  };
+
+  // Đồng bộ lên Google Sheets qua Apps Script nếu có cấu hình
+  if (googleScriptUrl) {
+    try {
+      const gasRes = await fetch(googleScriptUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "sendChatMessage",
+          senderId,
+          senderName,
+          senderRole,
+          content: content || "",
+          fileName: fileName || "",
+          fileData: fileData || ""
+        })
+      });
+      if (gasRes.ok) {
+        const gasData: any = await gasRes.json();
+        if (gasData && gasData.success) {
+          if (gasData.imageUrl) {
+            newMsg.imageUrl = gasData.imageUrl;
+          }
+          if (gasData.messageId) {
+            newMsg.id = gasData.messageId;
+          }
+        }
+      }
+    } catch (err: any) {
+      console.warn("Ghi nhận tin nhắn vào Google Sheets thất bại:", err);
+    }
+  }
+
+  chatMessages.push(newMsg);
+
+  // Phản hồi của Trợ lý AI khi có nội dung nhắc tới @bot hoặc @ai hoặc @trợ lý
+  const upperContent = (content || "").toUpperCase();
+  if (upperContent.includes("@BOT") || upperContent.includes("@AI") || upperContent.includes("@TRỢ LÝ") || upperContent.includes("TRỢ LÝ AI")) {
+    const queryText = (content || "")
+      .replace(/@bot|@ai|@trợ lý|trợ lý ai/gi, "")
+      .trim();
+    
+    let aiReply = "";
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        const chatContext = `
+Thông tin lớp học NTN:
+- Giảng viên phụ trách: Thầy Nguyễn Trọng Nghĩa.
+- Thành viên hỏi: ${senderName} (ID: ${senderId}, Vai trò: ${senderRole}).
+- Phiên điểm danh đang mở: ${JSON.stringify(attendanceSessions.filter(s => s.isActive), null, 2)}
+- Danh sách bài tập: ${JSON.stringify(assignments, null, 2)}
+`;
+        const systemInstruction = `
+Bạn là "Trợ lý Chatbot Lớp học" trả lời trực tiếp trong cuộc trò chuyện nhóm.
+Hãy trả lời các băn khoăn, câu hỏi của thành viên lớp dưới tư cách trợ lý thông minh đồng hành cùng giảng viên Nguyễn Trọng Nghĩa.
+Xưng hô là "Trợ lý AI" và gọi thành viên hỏi là "Em" hoặc "Bạn". Viết cô đọng, súc tích, mang tính giáo dục và khích lệ.
+`;
+        const response = await ai.models.generateContent({
+          model: "gemini-3.5-flash",
+          contents: `Tổng quan bối cảnh lớp học:\n${chatContext}\n\nNội dung câu hỏi của ${senderName}: ${queryText}`,
+          config: { systemInstruction, temperature: 0.6 }
+        });
+        aiReply = response.text || "Trợ lý AI đang xử lý thông tin, em phản hồi lại sau nhé!";
+      } catch (aiErr: any) {
+        aiReply = "Xin lỗi cả lớp, hệ sinh thái AI Core hiện đang quá tải. Hãy cùng nhau thảo luận trực tiếp nhé!";
+      }
+    } else {
+      // Offline fallback
+      const query = queryText.toLowerCase();
+      if (query.includes("mã") || query.includes("pin") || query.includes("code")) {
+        const activeSessions = attendanceSessions.filter(s => s.isActive);
+        if (activeSessions.length > 0) {
+          aiReply = `Chào ${senderName}! Mã PIN điểm danh của lớp đang diễn ra là: **${activeSessions[0].code}**. Em hãy nhập nhanh để điểm danh nhé!`;
+        } else {
+          aiReply = `Chào cả lớp! Hiện chưa có phiên điểm danh nào được Thầy Nguyễn Trọng Nghĩa kích hoạt. Hãy đợi Thầy mở nhé!`;
+        }
+      } else if (query.includes("bài tập") || query.includes("về nhà") || query.includes("nhiệm vụ")) {
+        if (assignments.length > 0) {
+          aiReply = `Danh sách bài tập hiện tại của lớp:\n` + assignments.map((a, i) => `- **${a.title}** (Mã: ${a.id}) - Hạn nộp: ${a.dueDate}`).join("\n");
+        } else {
+          aiReply = "Tuyệt vời! Hiện tại lớp chúng ta chưa có bài tập về nhà nào được giao.";
+        }
+      } else {
+        aiReply = `Chào ${senderName}! Tôi là Trợ lý AI đồng hành lớp học của Thầy Nguyễn Trọng Nghĩa. Hãy tag tớ bằng @bot để hỏi về mã điểm danh, thông tin bài tập hoặc giải thích kiến thức nhé! ✨`;
+      }
+    }
+
+    // Đẩy phản hồi của Bot sau 1.2s
+    setTimeout(() => {
+      const aiMsg: ChatMessage = {
+        id: "MSG_AI_" + Date.now().toString(),
+        senderId: "BOT_ASSISTANT",
+        senderName: "Trợ lý AI (Bot)",
+        senderRole: "Teacher",
+        content: aiReply,
+        time: new Date().toISOString()
+      };
+      chatMessages.push(aiMsg);
+    }, 1200);
+  }
+
+  res.json({ success: true, message: newMsg });
+});
+
+// Reset toàn bộ tin nhắn nhóm chat về tin mặc định ban đầu
+app.post("/api/chat/clean", (req, res) => {
+  chatMessages = [
+    {
+      id: "MSG_INIT_1",
+      senderId: "ADMIN",
+      senderName: "Thầy Nguyễn Trọng Nghĩa",
+      senderRole: "Teacher",
+      content: "Chào mừng cả lớp đến với nhóm chat chung! Nơi các em có thể hỏi bài học, trao đổi học thuật, và gửi trực tiếp hình ảnh bài tập/góp ý cho Thầy hoặc các bạn nhé. Chúc các em học tập vui vẻ! 🎯📚",
+      time: new Date().toISOString()
+    }
+  ];
+  res.json({ success: true, chatMessages });
 });
 
 
