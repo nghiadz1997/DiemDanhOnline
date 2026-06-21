@@ -1040,8 +1040,8 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
                   type="button"
                   onClick={() => {
                     setLoginRole("Teacher");
-                    setLoginId("admin");
-                    setLoginPassword("Nsg@2026");
+                    setLoginId("");
+                    setLoginPassword("");
                     setLoginError("");
                   }}
                   className={`py-3 text-xs font-bold rounded-2xl transition-all cursor-pointer flex items-center justify-center gap-2 ${
@@ -1118,7 +1118,7 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
                   )}
                 </button>
 
-                {loginRole === "Student" ? (
+                {loginRole === "Student" && (
                   <div className="text-center">
                     <button
                       type="button"
@@ -1130,16 +1130,6 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
                     >
                       Em chưa có tài khoản? Đăng ký ngay tự do
                     </button>
-                  </div>
-                ) : (
-                  <div className="bg-slate-50 rounded-2xl p-4 border border-slate-150 space-y-1">
-                    <p className="text-[10px] font-extrabold text-slate-500 uppercase tracking-widest flex items-center gap-1">
-                      <Info className="w-3.5 h-3.5 text-indigo-500" />
-                      Tài khoản Quản lý:
-                    </p>
-                    <div className="text-[10px] text-slate-400 font-mono">
-                      • Tài khoản: <b>admin</b> | Mật khẩu: <b>Nsg@2026</b>
-                    </div>
                   </div>
                 )}
               </form>
