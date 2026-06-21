@@ -24,6 +24,7 @@ import {
   CircleDot
 } from "lucide-react";
 import GoogleAppsScriptCode from "./components/GoogleAppsScriptCode";
+import { AttendanceChart } from "./components/AttendanceChart";
 import { DatabaseState, AttendanceSession, AttendanceLog, Assignment, Submission, User as AppUser } from "./types";
 
 export default function App() {
@@ -697,7 +698,8 @@ export default function App() {
           time: new Date().toISOString(),
           driveUrl: `/api/submissions/download/offline_${subId}`,
           fileName: studentSubmissionFile.name,
-          fileSize: (studentSubmissionFile.size / (1024 * 1024)).toFixed(1) + " MB"
+          fileSize: (studentSubmissionFile.size / (1024 * 1024)).toFixed(1) + " MB",
+          fileData: reader.result // Store Base64 data locally
         };
 
         // Xóa submission cũ nếu có trùng lặp
@@ -1011,7 +1013,7 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
             <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center font-bold text-white text-lg shadow mx-auto mb-3">
               NTN
             </div>
-            <h2 className="text-xl font-bold font-sans tracking-tight">Smart Attendance AI</h2>
+            <h2 className="text-xl font-bold font-sans tracking-tight">ĐIỂM DANH LỚP THUDK3-2026</h2>
             <p className="text-[11px] text-slate-400 font-mono uppercase tracking-wider">Hệ thống Điểm danh & Quản lý bài tập</p>
           </div>
 
@@ -1034,7 +1036,7 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
                   }`}
                 >
                   <User className="w-4 h-4" />
-                  Sinh viên học viên
+                  Sinh viên
                 </button>
                 <button
                   type="button"
@@ -1051,7 +1053,7 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
                   }`}
                 >
                   <Users className="w-4 h-4" />
-                  Giảng viên / Admin
+                  Giảng viên
                 </button>
               </div>
 
@@ -1227,7 +1229,7 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
           {/* Footer branding */}
           <div className="p-4 bg-slate-50 border-t border-slate-100 text-center">
             <p className="text-[10px] text-slate-400 leading-relaxed font-sans">
-              Môn học Smart Attendance & AI v1.2 © 2026. <br />
+              Môn học Tin Học Ứng Dụng Khóa 3 © 2026. <br />
               Thiết kế cấu trúc bởi <b>Thầy Nguyễn Trọng Nghĩa</b>.
             </p>
           </div>
@@ -1454,6 +1456,13 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
                   </div>
                 </div>
               </div>
+
+              {/* BIỂU ĐỒ THỐNG KÊ ĐIỂM DANH SINH VIÊN */}
+              <AttendanceChart
+                sessions={db.attendanceSessions}
+                logs={db.attendanceLogs}
+                students={db.users.filter(u => u.role === "Student")}
+              />
 
               {/* Main Grid: Bảng Logs và Báo cáo AI */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 max-h-min">
@@ -2399,7 +2408,7 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
                     </a>
                   ) : (
                     <a
-                      href={`/api/submissions/download/${previewSubmission.id}`}
+                      href={previewSubmission.driveUrl}
                       download={previewSubmission.fileName}
                       target="_blank"
                       className="flex items-center justify-center gap-1.5 px-4 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold font-sans transition-all shadow text-center cursor-pointer"
