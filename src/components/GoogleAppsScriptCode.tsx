@@ -99,7 +99,7 @@ function setupDatabase() {
   // Tab ClassChat
   if (!ss.getSheetByName("ClassChat")) {
     const sheet = ss.insertSheet("ClassChat");
-    sheet.appendRow(["Mã Tin Nhắn", "Người gửi", "Tên người gửi", "Vai trò", "Nội dung", "Thời gian", "Ảnh URL"]);
+    sheet.appendRow(["Mã Tin Nhắn", "Người gửi", "Tên người gửi", "Vai trò", "Nội dung", "Thời gian", "Ảnh URL", "Phòng"]);
   }
   
   Logger.log("Đã cấu trúc và khởi tạo cơ sở dữ liệu trên Google Sheets thành công.");
@@ -149,6 +149,16 @@ function doPost(e) {
       result = deleteUser(request.id);
     } else if (action === "createAssignment") {
       result = createAssignment(request.assignment);
+    } else if (action === "sendChatMessage") {
+      result = sendChatMessage(
+        request.senderId,
+        request.senderName,
+        request.senderRole,
+        request.content,
+        request.fileName,
+        request.fileData,
+        request.room
+      );
     }
     
     return ContentService.createTextOutput(JSON.stringify(result))
@@ -274,7 +284,8 @@ function getAllDataFromSheets() {
             senderRole: chatData[i][3] ? chatData[i][3].toString() : "Student",
             content: chatData[i][4] ? chatData[i][4].toString() : "",
             time: chatData[i][5] ? (typeof chatData[i][5] === "object" ? chatData[i][5].toISOString() : chatData[i][5].toString()) : "",
-            imageUrl: chatData[i][6] ? chatData[i][6].toString() : ""
+            imageUrl: chatData[i][6] ? chatData[i][6].toString() : "",
+            room: chatData[i][7] ? chatData[i][7].toString() : "ALL"
           });
         }
       }
@@ -606,7 +617,7 @@ function createAssignment(asm) {
 /**
  * Thêm tin nhắn chat lớp và lưu ảnh đính kèm (nếu có) lên Google Drive
  */
-function sendChatMessage(senderId, senderName, senderRole, content, fileName, base64Data) {
+function sendChatMessage(senderId, senderName, senderRole, content, fileName, base64Data, room) {
   try {
     var imageUrl = "";
     if (base64Data && fileName) {
@@ -636,7 +647,8 @@ function sendChatMessage(senderId, senderName, senderRole, content, fileName, ba
       senderRole,
       content,
       now.toISOString(),
-      imageUrl
+      imageUrl,
+      room || "ALL"
     ]);
     
     return { success: true, messageId: chatMsgId, imageUrl: imageUrl };

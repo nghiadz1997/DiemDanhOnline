@@ -82,7 +82,11 @@ interface ChatMessage {
   content: string;
   time: string;
   imageUrl?: string;
+  room?: string;
 }
+
+import fs from "fs";
+const DB_FILE = path.join(process.cwd(), "database.json");
 
 // Khởi tạo cơ sở dữ liệu rỗng chạy thật thực tế (Chỉ có thầy Nguyễn Trọng Nghĩa)
 let users: User[] = [
@@ -100,9 +104,54 @@ let chatMessages: ChatMessage[] = [
     senderName: "Thầy Nguyễn Trọng Nghĩa",
     senderRole: "Teacher",
     content: "Chào mừng cả lớp đến với nhóm chat chung! Nơi các em có thể hỏi bài học, trao đổi học thuật, và gửi trực tiếp hình ảnh bài tập/góp ý cho Thầy hoặc các bạn nhé. Chúc các em học tập vui vẻ! 🎯📚",
-    time: new Date(Date.now() - 3600 * 1000 * 2).toISOString() // 2 hours ago
+    time: new Date(Date.now() - 3600 * 1000 * 2).toISOString(), // 2 hours ago
+    room: "ALL"
   }
 ];
+
+// Helper lưu dữ liệu ra file backup trên Server
+function saveServerData() {
+  try {
+    const data = {
+      users,
+      attendanceSessions,
+      attendanceLogs,
+      assignments,
+      submissions,
+      chatMessages
+    };
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf8");
+    console.log("--> Đã sao lưu dữ liệu tập trung mới vào database.json");
+  } catch (err) {
+    console.warn("Lỗi lưu file database.json backup:", err);
+  }
+}
+
+// Helper tải dữ liệu từ file backup trên Server
+function loadServerData() {
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      const content = fs.readFileSync(DB_FILE, "utf8");
+      const data = JSON.parse(content);
+      if (data) {
+        if (Array.isArray(data.users)) users = data.users;
+        if (Array.isArray(data.attendanceSessions)) attendanceSessions = data.attendanceSessions;
+        if (Array.isArray(data.attendanceLogs)) attendanceLogs = data.attendanceLogs;
+        if (Array.isArray(data.assignments)) assignments = data.assignments;
+        if (Array.isArray(data.submissions)) submissions = data.submissions;
+        if (Array.isArray(data.chatMessages)) chatMessages = data.chatMessages;
+        console.log("--> Đã nạp thành công dữ liệu từ database.json server!");
+      }
+    } else {
+      saveServerData();
+    }
+  } catch (err) {
+    console.warn("Lỗi đọc file database.json backup:", err);
+  }
+}
+
+// Tự động nạp dữ liệu khi bật máy chủ
+loadServerData();
 
 let googleScriptUrl = process.env.GOOGLE_SCRIPT_URL || "";
 
@@ -142,10 +191,26 @@ async function syncFromGoogleSheets() {
             driveUrl: s.fileId ? `/api/submissions/download/${s.fileId}` : (s.driveUrl || "")
           }));
         }
-        if (data.chatMessages && data.chatMessages.length > 0) {
-          chatMessages = data.chatMessages;
+        if (data.chatMessages && Array.isArray(data.chatMessages)) {
+          const sheetMsgMap = new Map();
+          data.chatMessages.forEach((msg: ChatMessage) => {
+            sheetMsgMap.set(msg.id, {
+              ...msg,
+              room: msg.room || "ALL"
+            });
+          });
+          
+          // Giữ lại các tin nhắn mới trong bộ nhớ đệm (RAM) chưa kịp đồng bộ ngược từ Google Sheets
+          chatMessages.forEach((msg: ChatMessage) => {
+            if (!sheetMsgMap.has(msg.id)) {
+              sheetMsgMap.set(msg.id, msg);
+            }
+          });
+          
+          chatMessages = Array.from(sheetMsgMap.values()).sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
         }
         console.log("Successfully synchronized database with Google Sheets!");
+        saveServerData();
       }
     }
   } catch (err) {
@@ -216,7 +281,7 @@ app.post("/api/login", (req, res) => {
 });
 
 // 2. Tạo phiên điểm danh mới (Vai trò Giáo viên)
-app.post("/api/attendance-session/create", (req, res) => {
+app.post("/api/attendance-session/create", async (req, res) => {
   const { className, code, durationMinutes } = req.body;
   if (!className || !code || !durationMinutes) {
     return res.status(400).json({ error: "Thiếu thông tin tạo phiên điểm danh" });
@@ -237,12 +302,36 @@ app.post("/api/attendance-session/create", (req, res) => {
     isActive: true
   };
 
+  if (googleScriptUrl) {
+    try {
+      const gasRes = await fetch(googleScriptUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "createAttendanceSession",
+          className,
+          durationMinutes: Number(durationMinutes)
+        })
+      });
+      if (gasRes.ok) {
+        const gasData: any = await gasRes.json();
+        if (gasData && gasData.success) {
+          newSession.id = gasData.sessionId || newSession.id;
+          newSession.code = gasData.code || newSession.code;
+        }
+      }
+    } catch (err) {
+      console.warn("Lỗi đồng bộ tạo phiên điểm danh lên Google Sheets:", err);
+    }
+  }
+
   attendanceSessions.unshift(newSession); // Đưa lên đầu
+  saveServerData();
   res.json({ success: true, session: newSession });
 });
 
 // 3. Thực hiện điểm danh (Vai trò Sinh viên) - Bỏ GPS theo yêu cầu
-app.post("/api/attendance/submit", (req, res) => {
+app.post("/api/attendance/submit", async (req, res) => {
   const { studentId, code, ip } = req.body;
   if (!studentId || !code) {
     return res.status(400).json({ error: "Thiếu mã sinh viên hoặc mã điểm danh" });
@@ -286,6 +375,29 @@ app.post("/api/attendance/submit", (req, res) => {
     ip: ip || req.ip || "127.0.0.1"
   };
 
+  if (googleScriptUrl) {
+    try {
+      const gasRes = await fetch(googleScriptUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "submitAttendance",
+          studentId: student.id,
+          code: String(code).trim(),
+          gpsInfo: `IP: ${ip || req.ip || "127.0.0.1"}`
+        })
+      });
+      if (gasRes.ok) {
+        const gasData: any = await gasRes.json();
+        if (gasData && gasData.success === false) {
+          return res.status(400).json({ error: gasData.message || "Ghi nhận điểm danh vào Google Sheets thất bại" });
+        }
+      }
+    } catch (err) {
+      console.warn("Lỗi đồng bộ điểm danh lên hiểm danh Google Sheets:", err);
+    }
+  }
+
   attendanceLogs.push(newLog);
 
   // TÍNH LÀ CÓ ĐI HỌC VÀ CÓ LÀM BÀI: Tự động tạo Submission cho sinh viên đối với toàn bộ bài tập đang có nếu chưa nộp
@@ -306,6 +418,7 @@ app.post("/api/attendance/submit", (req, res) => {
     }
   });
 
+  saveServerData();
   res.json({ success: true, log: newLog });
 });
 
@@ -355,6 +468,7 @@ app.post("/api/assignment/create", async (req, res) => {
   }
 
   assignments.unshift(newAsm);
+  saveServerData();
   res.json({ success: true, assignment: newAsm });
 });
 
@@ -417,6 +531,7 @@ app.post("/api/assignment/submit", async (req, res) => {
           submissions.push(newSub);
         }
 
+        saveServerData();
         return res.json({ success: true, submission: newSub });
       } else {
         return res.status(500).json({ error: gasData?.error || "Apps Script báo lỗi không thể lưu tệp" });
@@ -450,6 +565,7 @@ app.post("/api/assignment/submit", async (req, res) => {
     submissions.push(newSub);
   }
 
+  saveServerData();
   res.json({ success: true, submission: newSub });
 });
 
@@ -558,6 +674,7 @@ app.post("/api/register", async (req, res) => {
   }
 
   users.push(newUser);
+  saveServerData();
   res.json({ success: true, user: newUser });
 });
 
@@ -604,6 +721,7 @@ app.post("/api/users/create", async (req, res) => {
   }
 
   users.push(newUser);
+  saveServerData();
   res.json({ success: true, user: newUser });
 });
 
@@ -641,6 +759,7 @@ app.delete("/api/users/delete/:id", async (req, res) => {
   }
 
   users.splice(index, 1);
+  saveServerData();
   res.json({ success: true });
 });
 
@@ -868,7 +987,7 @@ Câu hỏi mới nhất của Sinh viên: ${lastMessage}
 
 // Gửi tin nhắn vào Nhóm chat lớp và tích hợp phản hồi AI thông minh khi được tag
 app.post("/api/chat/send", async (req, res) => {
-  const { senderId, senderName, senderRole, content, fileName, fileData } = req.body;
+  const { senderId, senderName, senderRole, content, fileName, fileData, room } = req.body;
   
   if (!senderId || !senderName) {
     return res.status(400).json({ error: "Thiếu thông tin người gửi" });
@@ -876,6 +995,7 @@ app.post("/api/chat/send", async (req, res) => {
 
   const now = new Date();
   const chatMsgId = "MSG_" + now.getTime().toString();
+  const activeRoom = room || "ALL";
   
   let imageUrl = "";
   if (fileData && fileName) {
@@ -889,7 +1009,8 @@ app.post("/api/chat/send", async (req, res) => {
     senderRole: senderRole || "Student",
     content: content || "",
     time: now.toISOString(),
-    imageUrl
+    imageUrl,
+    room: activeRoom
   };
 
   // Đồng bộ lên Google Sheets qua Apps Script nếu có cấu hình
@@ -905,7 +1026,8 @@ app.post("/api/chat/send", async (req, res) => {
           senderRole,
           content: content || "",
           fileName: fileName || "",
-          fileData: fileData || ""
+          fileData: fileData || "",
+          room: activeRoom
         })
       });
       if (gasRes.ok) {
@@ -925,6 +1047,7 @@ app.post("/api/chat/send", async (req, res) => {
   }
 
   chatMessages.push(newMsg);
+  saveServerData();
 
   // Phản hồi của Trợ lý AI khi có nội dung nhắc tới @bot hoặc @ai hoặc @trợ lý
   const upperContent = (content || "").toUpperCase();
@@ -942,9 +1065,10 @@ Thông tin lớp học NTN:
 - Thành viên hỏi: ${senderName} (ID: ${senderId}, Vai trò: ${senderRole}).
 - Phiên điểm danh đang mở: ${JSON.stringify(attendanceSessions.filter(s => s.isActive), null, 2)}
 - Danh sách bài tập: ${JSON.stringify(assignments, null, 2)}
+- Phòng chat hoạt động: ${activeRoom}
 `;
         const systemInstruction = `
-Bạn là "Trợ lý Chatbot Lớp học" trả lời trực tiếp trong cuộc trò chuyện nhóm.
+Bạn là "Trợ lý Chatbot Lớp học" trả lời trực tiếp trong cuộc trò chuyện nhóm của phòng chat ${activeRoom}.
 Hãy trả lời các băn khoăn, câu hỏi của thành viên lớp dưới tư cách trợ lý thông minh đồng hành cùng giảng viên Nguyễn Trọng Nghĩa.
 Xưng hô là "Trợ lý AI" và gọi thành viên hỏi là "Em" hoặc "Bạn". Viết cô đọng, súc tích, mang tính giáo dục và khích lệ.
 `;
@@ -986,9 +1110,11 @@ Xưng hô là "Trợ lý AI" và gọi thành viên hỏi là "Em" hoặc "Bạn
         senderName: "Trợ lý AI (Bot)",
         senderRole: "Teacher",
         content: aiReply,
-        time: new Date().toISOString()
+        time: new Date().toISOString(),
+        room: activeRoom
       };
       chatMessages.push(aiMsg);
+      saveServerData();
     }, 1200);
   }
 
@@ -1004,9 +1130,11 @@ app.post("/api/chat/clean", (req, res) => {
       senderName: "Thầy Nguyễn Trọng Nghĩa",
       senderRole: "Teacher",
       content: "Chào mừng cả lớp đến với nhóm chat chung! Nơi các em có thể hỏi bài học, trao đổi học thuật, và gửi trực tiếp hình ảnh bài tập/góp ý cho Thầy hoặc các bạn nhé. Chúc các em học tập vui vẻ! 🎯📚",
-      time: new Date().toISOString()
+      time: new Date().toISOString(),
+      room: "ALL"
     }
   ];
+  saveServerData();
   res.json({ success: true, chatMessages });
 });
 

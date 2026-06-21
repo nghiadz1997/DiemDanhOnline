@@ -51,6 +51,7 @@ export interface ChatMessage {
   content: string;
   time: string;
   imageUrl?: string;
+  room?: string;
 }
 
 export interface DatabaseState {

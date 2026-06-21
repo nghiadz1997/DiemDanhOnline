@@ -129,6 +129,7 @@ export default function App() {
   const [chatImageFilename, setChatImageFilename] = useState<string>("");
   const [chatLoading, setChatLoading] = useState(false);
   const [chatSearch, setChatSearch] = useState("");
+  const [activeRoom, setActiveRoom] = useState<string>("ALL");
   const [zoomImageUrl, setZoomImageUrl] = useState<string | null>(null);
   
   // Trạng thái mở/đóng Sidebar trên điện thoại/IPad
@@ -136,41 +137,20 @@ export default function App() {
 
   const [isOfflineMode, setIsOfflineMode] = useState(false);
 
-  // Khởi tạo Database offline từ LocalStorage hoặc dữ liệu mặc định ban đầu
+  // Khởi tạo Database rỗng
   const getLocalDB = () => {
-    const raw = localStorage.getItem("ntn_local_db");
-    if (!raw) {
-      const initDb = {
-        users: [
-          { id: "admin", name: "Thầy Nguyễn Trọng Nghĩa", role: "Teacher", className: "ALL", password: "Nsg@2026" }
-        ],
-        attendanceSessions: [],
-        attendanceLogs: [],
-        assignments: [],
-        submissions: []
-      };
-      localStorage.setItem("ntn_local_db", JSON.stringify(initDb));
-      return initDb;
-    }
-    try {
-      return JSON.parse(raw);
-    } catch {
-      const initDb = {
-        users: [
-          { id: "admin", name: "Thầy Nguyễn Trọng Nghĩa", role: "Teacher", className: "ALL", password: "Nsg@2026" }
-        ],
-        attendanceSessions: [],
-        attendanceLogs: [],
-        assignments: [],
-        submissions: []
-      };
-      localStorage.setItem("ntn_local_db", JSON.stringify(initDb));
-      return initDb;
-    }
+    return {
+      users: [
+        { id: "admin", name: "Thầy Nguyễn Trọng Nghĩa", role: "Teacher", className: "ALL", password: "Nsg@2026" }
+      ],
+      attendanceSessions: [],
+      attendanceLogs: [],
+      assignments: [],
+      submissions: []
+    };
   };
 
   const saveLocalDB = (newDb: any) => {
-    localStorage.setItem("ntn_local_db", JSON.stringify(newDb));
     setDb(newDb);
   };
 
@@ -185,11 +165,14 @@ export default function App() {
         const data = JSON.parse(text);
         if (data && typeof data === "object" && data.users) {
           setDb(data);
-          localStorage.setItem("ntn_local_db", JSON.stringify(data));
           setIsOfflineMode(false);
           parseSuccess = true;
           if (data.chatMessages) {
-            setChatMessages(data.chatMessages);
+            setChatMessages(prev => {
+              const msgMap = new Map();
+              data.chatMessages.forEach((msg: any) => msgMap.set(msg.id, msg));
+              return Array.from(msgMap.values()).sort((a: any, b: any) => new Date(a.time).getTime() - new Date(b.time).getTime());
+            });
           }
           if (data.assignments && data.assignments.length > 0 && !selectedAsmId) {
             setSelectedAsmId(data.assignments[0].id);
@@ -229,10 +212,13 @@ export default function App() {
         const data = JSON.parse(text);
         if (data && typeof data === "object" && data.users) {
           setDb(data);
-          localStorage.setItem("ntn_local_db", JSON.stringify(data));
           setIsOfflineMode(false);
           if (data.chatMessages) {
-            setChatMessages(data.chatMessages);
+            setChatMessages(prev => {
+              const msgMap = new Map();
+              data.chatMessages.forEach((msg: any) => msgMap.set(msg.id, msg));
+              return Array.from(msgMap.values()).sort((a: any, b: any) => new Date(a.time).getTime() - new Date(b.time).getTime());
+            });
           }
         }
       } catch (e) {
@@ -244,6 +230,8 @@ export default function App() {
   };
 
   useEffect(() => {
+    // Dọn dẹp tàn dư ntn_local_db trong LocalStorage theo chuẩn đồng bộ hóa tập trung
+    localStorage.removeItem("ntn_local_db");
     fetchData();
     // Tự sinh mã PIN ngẫu nhiên cho form giáo viên tạo
     generateRandomPin();
@@ -974,78 +962,84 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
     const sender = currentUser || { id: "GUEST", name: "Khách viếng thăm", role: "Student" };
 
     try {
-      if (!isOfflineMode) {
-        try {
-          const res = await fetch("/api/chat/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              senderId: sender.id,
-              senderName: sender.name,
-              senderRole: sender.role,
-              content: textMsg,
-              fileName: filenameImg,
-              fileData: base64Img
-            })
+      let isSentOnServer = false;
+      try {
+        const res = await fetch("/api/chat/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            senderId: sender.id,
+            senderName: sender.name,
+            senderRole: sender.role,
+            content: textMsg,
+            fileName: filenameImg,
+            fileData: base64Img,
+            room: activeRoom
+          })
+        });
+        const data = await res.json();
+        if (data.success) {
+          isSentOnServer = true;
+          setIsOfflineMode(false);
+          setChatMessages(prev => {
+            const exists = prev.some(m => m.id === data.message.id);
+            if (exists) return prev;
+            const filtered = prev.filter(m => !m.id.startsWith("MSG_OFFLINE_") || m.content !== textMsg);
+            return [...filtered, data.message].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
           });
-          const data = await res.json();
-          if (data.success) {
-            setChatMessages(prev => {
-              const exists = prev.some(m => m.id === data.message.id);
-              if (exists) return prev;
-              return [...prev, data.message];
-            });
-            setChatLoading(false);
-            // Đồng bộ lại sau 1.5s để cập nhật phản hồi của AI Bot nếu có tag
-            setTimeout(() => {
-              fetchDataSilent();
-            }, 1500);
-            return;
-          }
-        } catch (apiErr) {
-          console.warn("Gửi trực tuyến thất bại, dùng cơ chế offline", apiErr);
-          setIsOfflineMode(true);
+          setChatLoading(false);
+          // Đồng bộ lại sau 1.5s để cập nhật phản hồi của AI Bot nếu có tag
+          setTimeout(() => {
+            fetchDataSilent();
+          }, 1500);
+          return;
         }
+      } catch (apiErr) {
+        console.warn("Gửi trực tuyến thất bại, dùng cơ chế offline", apiErr);
       }
 
-      // Luồng Offline
-      const now = new Date();
-      const localMsg: ChatMessage = {
-        id: "MSG_OFFLINE_" + now.getTime().toString(),
-        senderId: sender.id.toUpperCase(),
-        senderName: sender.name,
-        senderRole: sender.role === "Teacher" ? "Teacher" : "Student",
-        content: textMsg,
-        time: now.toISOString(),
-        imageUrl: base64Img || undefined
-      };
+      // Luồng Offline Fallback
+      if (!isSentOnServer) {
+        setIsOfflineMode(true);
+        const now = new Date();
+        const localMsg: ChatMessage = {
+          id: "MSG_OFFLINE_" + now.getTime().toString(),
+          senderId: sender.id.toUpperCase(),
+          senderName: sender.name,
+          senderRole: sender.role === "Teacher" ? "Teacher" : "Student",
+          content: textMsg,
+          time: now.toISOString(),
+          imageUrl: base64Img || undefined,
+          room: activeRoom
+        };
 
-      setChatMessages(prev => [...prev, localMsg]);
-      setChatLoading(false);
+        setChatMessages(prev => [...prev, localMsg]);
+        setChatLoading(false);
 
-      // Phản hồi giả lập thông minh offline
-      const upperCheck = textMsg.toUpperCase();
-      if (upperCheck.includes("@BOT") || upperCheck.includes("@AI") || upperCheck.includes("@TRỢ LÝ") || upperCheck.includes("TRỢ LÝ AI")) {
-        setChatLoading(true);
-        setTimeout(() => {
-          const activeSessions = db.attendanceSessions.filter((s: any) => s.isActive);
-          let botReply = `Chào em ${sender.name}! Hiện tại tớ đang hoạt động ở chế độ Offline. `;
-          if (activeSessions.length > 0) {
-            botReply += `Hệ thống ghi nhận phiên điểm danh đang mở lớp **${activeSessions[0].className}** có mã hoạt động là: **${activeSessions[0].code}**. Hãy điểm danh ngay nhé!`;
-          } else {
-            botReply += `Hệ thống ghi nhận lớp chưa mở phiên điểm danh nào. Hãy chờ giáo viên mở phiên nhé!`;
-          }
-          
-          setChatMessages(prev => [...prev, {
-            id: "MSG_AI_OFFLINE_" + Date.now().toString(),
-            senderId: "BOT_ASSISTANT",
-            senderName: "Trợ lý AI (Bot Offline)",
-            senderRole: "Teacher",
-            content: botReply,
-            time: new Date().toISOString()
-          }]);
-          setChatLoading(false);
-        }, 1200);
+        // Phản hồi giả lập thông minh offline
+        const upperCheck = textMsg.toUpperCase();
+        if (upperCheck.includes("@BOT") || upperCheck.includes("@AI") || upperCheck.includes("@TRỢ LÝ") || upperCheck.includes("TRỢ LÝ AI")) {
+          setChatLoading(true);
+          setTimeout(() => {
+            const activeSessions = db.attendanceSessions.filter((s: any) => s.isActive);
+            let botReply = `Chào em ${sender.name}! Hiện tại tớ đang hoạt động ở chế độ Offline. `;
+            if (activeSessions.length > 0) {
+              botReply += `Hệ thống ghi nhận phiên điểm danh đang mở lớp **${activeSessions[0].className}** có mã hoạt động là: **${activeSessions[0].code}**. Hãy điểm danh ngay nhé!`;
+            } else {
+              botReply += `Hệ thống ghi nhận lớp chưa mở phiên điểm danh nào. Hãy chờ giáo viên mở phiên nhé!`;
+            }
+            
+            setChatMessages(prev => [...prev, {
+              id: "MSG_AI_OFFLINE_" + Date.now().toString(),
+              senderId: "BOT_ASSISTANT",
+              senderName: "Trợ lý AI (Bot Offline)",
+              senderRole: "Teacher",
+              content: botReply,
+              time: new Date().toISOString()
+            }]);
+            setChatLoading(false);
+          }, 1200);
+        }
       }
     } catch (err: any) {
       console.error("Lỗi gửi tin nhắn:", err);
@@ -1107,6 +1101,26 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
     const studentLogsCount = db.attendanceLogs.filter(l => l.studentId === u.id).length;
     return studentLogsCount < db.attendanceSessions.length;
   }).length;
+
+  const getAvailableRooms = () => {
+    if (!currentUser) return ["ALL"];
+    if (currentUser.role === "Teacher" || currentUser.role === "Admin") {
+      const uniqueClassNames = Array.from(new Set(
+        (db.users || [])
+          .filter((u: any) => u.className && u.className.trim().toUpperCase() !== "ALL")
+          .map((u: any) => u.className.trim().toUpperCase())
+      )).filter(Boolean).sort();
+      
+      // Fallback representing classrooms
+      if (uniqueClassNames.length === 0) {
+        uniqueClassNames.push("CNTT", "KTPM");
+      }
+      return ["ALL", ...uniqueClassNames];
+    } else {
+      const studentClass = (currentUser.className || "").trim().toUpperCase();
+      return studentClass && studentClass !== "ALL" ? ["ALL", studentClass] : ["ALL"];
+    }
+  };
 
   if (!currentUser) {
     return (
@@ -1891,7 +1905,7 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
                     <div className="lg:col-span-2 space-y-3">
                       <p className="text-xs font-bold text-slate-700 uppercase tracking-wider font-mono">Danh sách sinh viên hiện hữu</p>
                       
-                      <div className="border border-slate-100 rounded-2xl overflow-hidden max-h-[340px] overflow-y-auto">
+                      <div className="border border-slate-100 rounded-2xl overflow-x-auto overflow-y-auto max-h-[340px] w-full">
                         {db.users.filter(u => u.role === "Student").length === 0 ? (
                           <div className="p-10 text-center text-slate-400">
                             Chưa có sinh viên nào trong lớp học. Mời thầy tạo tài khoản hoặc hướng dẫn học sinh đăng ký tự do từ ngoài màn hình đăng nhập.
@@ -2389,245 +2403,333 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
           )}
 
           {/* TAB 5: NHÓM CHAT LỚP THẢO LUẬN & GỬI BÀI TẬP */}
-          {activeTab === "chat" && (
-            <div className="max-w-4xl mx-auto bg-white rounded-3xl border border-slate-100 shadow-xl overflow-hidden flex flex-col h-[calc(100vh-140px)] min-h-[480px] lg:h-[680px] animate-fade-in" id="class-group-chat-tab">
-              
-              {/* Tiêu đề Box Chat - Nhóm Chat Lớp */}
-              <div className="bg-gradient-to-r from-indigo-900 to-indigo-850 text-white px-6 py-5 flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-indigo-950/20">
-                <div className="flex items-center gap-3">
-                  <div className="relative">
-                    <div className="w-12 h-12 rounded-2xl bg-indigo-600/90 border border-white/20 flex items-center justify-center font-bold text-lg shadow-md animate-pulse">
-                      <MessageSquare className="w-6 h-6 text-white" />
+          {activeTab === "chat" && (() => {
+            const rooms = getAvailableRooms();
+            // Đảm bảo activeRoom hợp lệ, nếu không thì reset về ALL
+            const currentRoom = rooms.includes(activeRoom) ? activeRoom : "ALL";
+            const isStudentInAllRoom = currentUser?.role === "Student" && currentRoom === "ALL";
+
+            return (
+              <div className="max-w-6xl mx-auto bg-white rounded-3xl border border-slate-100 shadow-xl overflow-hidden flex flex-col h-[calc(100vh-140px)] min-h-[480px] lg:h-[680px] animate-fade-in" id="class-group-chat-tab">
+                
+                {/* Tiêu đề Box Chat - Nhóm Chat Lớp */}
+                <div className="bg-gradient-to-r from-indigo-900 to-indigo-850 text-white px-6 py-4 flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-indigo-950/25">
+                  <div className="flex items-center gap-3">
+                    <div className="relative shrink-0">
+                      <div className="w-11 h-11 rounded-2xl bg-indigo-600/95 border border-white/25 flex items-center justify-center font-bold text-lg shadow-md">
+                        <MessageSquare className="w-5.5 h-4.5 text-white animate-pulse" />
+                      </div>
+                      <span className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-indigo-900 rounded-full animate-ping"></span>
                     </div>
-                    <span className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-indigo-900 rounded-full"></span>
-                  </div>
-                  <div>
-                    <h3 className="font-extrabold text-sm md:text-base leading-none flex items-center gap-2">
-                      Nhóm Thảo Luận Lớp & Hỏi Bài 👥
-                    </h3>
-                    <p className="text-[10px] text-indigo-200 mt-1.5 font-mono">
-                      Khóa học Smart Attendance AI • {db.users.length} thành viên trực tuyến
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2 self-end md:self-auto">
-                  {/* Tìm kiếm tin nhắn */}
-                  <div className="relative">
-                    <input 
-                      type="text"
-                      placeholder="Tìm tin nhắn..."
-                      value={chatSearch}
-                      onChange={(e) => setChatSearch(e.target.value)}
-                      className="w-36 md:w-44 text-[11px] bg-indigo-950/40 border border-indigo-800/60 rounded-xl py-1.5 pl-7 pr-2.5 text-indigo-100 placeholder-indigo-300 focus:outline-none focus:bg-indigo-950/70 focus:border-indigo-500 font-sans"
-                    />
-                    <Search className="w-3.5 h-3.5 absolute left-2.5 top-2 text-indigo-300" />
+                    <div>
+                      <h3 className="font-extrabold text-sm md:text-base leading-none flex items-center gap-2">
+                        Nhóm Thảo Luận Lớp & Hỏi Bài 👥
+                      </h3>
+                      <p className="text-[10px] text-indigo-200 mt-1.5 font-mono">
+                        Bộ phận: {currentUser?.role === "Teacher" ? "Giảng viên" : currentUser?.role === "Admin" ? "Quản trị viên" : "Sinh viên lớp " + (currentUser?.className || "Tự do")} • Kênh: <span className="font-bold underline text-indigo-100">{currentRoom === "ALL" ? "Thông báo chung (All)" : "Kênh " + currentRoom}</span>
+                      </p>
+                    </div>
                   </div>
 
-                  <button
-                    onClick={() => {
-                      fetchDataSilent();
-                    }}
-                    title="Đồng bộ ngay"
-                    className="p-2 bg-indigo-800/40 hover:bg-indigo-800 text-indigo-100 hover:text-white rounded-xl transition-all border border-indigo-800/40 cursor-pointer text-xs flex items-center gap-1 font-sans"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin-slow" />
-                  </button>
+                  <div className="flex items-center gap-2 self-end md:self-auto">
+                    {/* Tìm kiếm tin nhắn */}
+                    <div className="relative">
+                      <input 
+                        type="text"
+                        placeholder="Tìm tin nhắn..."
+                        value={chatSearch}
+                        onChange={(e) => setChatSearch(e.target.value)}
+                        className="w-36 md:w-44 text-[11px] bg-indigo-950/40 border border-indigo-800/60 rounded-xl py-1.5 pl-7 pr-2.5 text-indigo-100 placeholder-indigo-300 focus:outline-none focus:bg-indigo-950/70 focus:border-indigo-500 font-sans"
+                      />
+                      <Search className="w-3.5 h-3.5 absolute left-2.5 top-2 text-indigo-300" />
+                    </div>
 
-                  {currentUser?.role === "Teacher" && (
                     <button
-                      onClick={handleClearChatHistory}
-                      className="p-2 bg-rose-500/20 hover:bg-rose-600/90 text-rose-300 hover:text-white rounded-xl transition-all border border-rose-500/10 cursor-pointer text-xs"
-                      title="Xóa lịch sử tin nhắn"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Lịch sử tin nhắn của cả lớp */}
-              <div className="flex-1 p-6 overflow-y-auto space-y-4 bg-slate-50/50 flex flex-col">
-                {chatMessages.filter(msg => {
-                  const q = chatSearch.toLowerCase();
-                  return (msg.content || "").toLowerCase().includes(q) || (msg.senderName || "").toLowerCase().includes(q);
-                }).map((msg) => {
-                  const isMe = msg.senderId.trim().toUpperCase() === (currentUser?.id || "GUEST").trim().toUpperCase();
-                  const isTeacher = msg.senderRole === "Teacher" || msg.senderId.trim().toUpperCase() === "ADMIN";
-                  const isBot = msg.senderId === "BOT_ASSISTANT";
-
-                  return (
-                    <div 
-                      key={msg.id} 
-                      className={`flex items-start gap-2.5 max-w-[85%] ${
-                        isMe ? 'ml-auto flex-row-reverse' : 'mr-auto'
-                      }`}
-                    >
-                      {/* Avatar */}
-                      <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 text-xs font-bold shadow-sm ${
-                        isMe 
-                          ? 'bg-indigo-600 text-white' 
-                          : isTeacher 
-                            ? 'bg-amber-500 text-slate-900 border border-amber-300'
-                            : isBot
-                              ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
-                              : 'bg-emerald-600 text-white'
-                      }`}>
-                        {isMe ? "TÔI" : isBot ? "AI" : msg.senderName.substring(0, 2).toUpperCase()}
-                      </div>
-                      
-                      {/* Khung tin nhắn */}
-                      <div className="flex flex-col space-y-1">
-                        {/* Tên người gửi & Thời gian */}
-                        <div className={`flex items-center gap-1.5 text-[10px] text-slate-400 ${isMe ? 'justify-end' : 'justify-start'}`}>
-                          <span className={`font-bold ${isTeacher ? 'text-amber-600' : 'text-slate-600'}`}>
-                            {msg.senderName}
-                          </span>
-                          {isTeacher && !isBot && (
-                            <span className="px-1.5 py-0.2 bg-amber-100 text-amber-800 rounded font-bold scale-90">GV</span>
-                          )}
-                          {isBot && (
-                            <span className="px-1.5 py-0.2 bg-indigo-100 text-indigo-800 rounded font-bold scale-90 flex items-center gap-0.5">
-                              🤖 AI
-                            </span>
-                          )}
-                          <span>•</span>
-                          <span className="font-mono">
-                            {new Date(msg.time).toLocaleTimeString("vi-VN", { hour: '2-digit', minute: '2-digit' })}
-                          </span>
-                        </div>
-
-                        {/* Văn bản tin nhắn */}
-                        <div className={`p-3.5 rounded-2xl text-xs leading-relaxed shadow-sm border border-black/5 ${
-                          isMe 
-                            ? 'bg-indigo-600 text-white rounded-tr-none' 
-                            : isTeacher
-                              ? 'bg-amber-50 border-amber-100 text-slate-800 rounded-tl-none font-medium'
-                              : isBot
-                                ? 'bg-indigo-50/80 border-indigo-100 text-indigo-950 rounded-tl-none font-sans'
-                                : 'bg-white text-slate-800 border-slate-100 rounded-tl-none'
-                        }`}>
-                          <p className="whitespace-pre-line font-sans">{msg.content}</p>
-                          
-                          {/* Render hình ảnh bài tập/góp ý đính kèm */}
-                          {msg.imageUrl && (
-                            <div className="mt-2.5 relative group overflow-hidden rounded-xl border border-dashed border-slate-300 bg-slate-100 max-w-sm">
-                              <img 
-                                src={msg.imageUrl} 
-                                alt="Ảnh đính kèm" 
-                                referrerPolicy="no-referrer"
-                                className="max-h-48 w-full object-cover rounded-xl cursor-zoom-in group-hover:scale-102 transition-all"
-                                onClick={() => setZoomImageUrl(msg.imageUrl || null)}
-                              />
-                              <div className="absolute inset-0 bg-transparent hover:bg-black/10 transition-colors flex items-center justify-center cursor-pointer pointer-events-none">
-                                <Maximize2 className="w-6 h-6 text-white/0 group-hover:text-white/85 drop-shadow transition-all" />
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {chatLoading && (
-                  <div className="flex items-start gap-2.5 max-w-[80%] mr-auto">
-                    <div className="w-8 h-8 rounded-xl bg-indigo-100 text-indigo-700 border border-indigo-200 flex items-center justify-center font-bold text-xs">
-                      AI
-                    </div>
-                    <div className="bg-white text-slate-500 border border-slate-100 p-4 rounded-2xl rounded-tl-none text-xs flex items-center gap-2 shadow-sm">
-                      <span className="flex gap-1.5">
-                        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce"></span>
-                        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce delay-100"></span>
-                        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce delay-200"></span>
-                      </span>
-                      <span className="font-sans text-slate-400">Trợ lý AI lớp đang nhập phản hồi...</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Câu hỏi gợi ý nhanh để TAG BOT hỗ trợ */}
-              <div className="px-6 py-2.5 bg-slate-100/50 border-t border-slate-100 overflow-x-auto whitespace-nowrap flex items-center gap-2">
-                <span className="text-[10px] text-slate-400 uppercase font-bold shrink-0">Hỏi nhanh AI:</span>
-                {[
-                  "@bot xem mã pin điểm danh hôm nay",
-                  "@bot bài tập lớp đã giao là gì?",
-                  "@bot tóm tắt cấu trúc cơ sở dữ liệu trên G-Suite"
-                ].map((q, qidx) => (
-                  <button
-                    key={qidx}
-                    onClick={() => {
-                      setInputMessage(q);
-                    }}
-                    className="inline-block px-3 py-1.5 bg-white hover:bg-indigo-50 text-[10px] text-indigo-750 font-sans border border-slate-200 rounded-lg transition-all cursor-pointer shadow-sm"
-                  >
-                    {q}
-                  </button>
-                ))}
-              </div>
-
-              {/* Form gửi tin nhắn kèm hình ảnh của học viên & thầy */}
-              <div className="p-4 bg-white border-t border-slate-100 flex flex-col gap-2">
-                {/* Preview ảnh chuẩn bị gửi */}
-                {chatImage && (
-                  <div className="flex items-center gap-2.5 p-2 bg-indigo-50 border border-indigo-100 rounded-xl max-w-sm animate-fade-in">
-                    <img 
-                      src={chatImage} 
-                      alt="Xem trước ảnh đính kèm" 
-                      className="w-12 h-12 object-cover rounded-lg border border-indigo-200 shadow-sm"
-                    />
-                    <div className="flex-1 overflow-hidden">
-                      <p className="text-[10px] text-indigo-900 font-bold truncate">Đính kèm: {chatImageFilename}</p>
-                      <p className="text-[9px] text-indigo-400">Ảnh bài tập chuẩn bị gửi</p>
-                    </div>
-                    <button 
                       onClick={() => {
-                        setChatImage(null);
-                        setChatImageFilename("");
+                        fetchDataSilent();
                       }}
-                      className="p-1 px-2.5 rounded-lg bg-indigo-100 hover:bg-rose-100 hover:text-rose-600 text-indigo-700 text-[10px] font-bold cursor-pointer transition-colors"
+                      title="Đồng bộ ngay"
+                      className="p-2 bg-indigo-800/40 hover:bg-slate-800 text-indigo-100 hover:text-white rounded-xl transition-all border border-indigo-800/40 cursor-pointer text-xs flex items-center gap-1 font-sans"
                     >
-                      ✕ Hủy bỏ
+                      <RefreshCw className="w-3.5 h-3.5" />
                     </button>
+
+                    {currentUser?.role === "Teacher" && (
+                      <button
+                        onClick={handleClearChatHistory}
+                        className="p-2 bg-rose-500/20 hover:bg-rose-600/90 text-rose-300 hover:text-white rounded-xl transition-all border border-rose-500/10 cursor-pointer text-xs animate-pulse"
+                        title="Xóa lịch sử tin nhắn"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
-                )}
+                </div>
 
-                <form onSubmit={handleSendChatMessage} className="flex gap-2">
-                  {/* Nut attach hinh anh */}
-                  <label 
-                    className={`px-3 bg-slate-50 hover:bg-slate-100 text-slate-500 hover:text-indigo-600 rounded-2xl border border-slate-200 transition-all cursor-pointer flex items-center justify-center shadow-sm relative group`}
-                    title="Đính kèm ảnh bài tập/góp ý"
-                  >
-                    <ImageIcon className="w-5 h-5" />
-                    <input 
-                      type="file" 
-                      accept="image/*"
-                      onChange={handleChatImageChange}
-                      className="hidden" 
-                    />
-                  </label>
-
-                  <input 
-                    type="text" 
-                    value={inputMessage}
-                    onChange={(e) => setInputMessage(e.target.value)}
-                    placeholder={chatImage ? `Viết ghi chú/giải thích cho hình ảnh bài tập này...` : `Chào ${currentUser?.name || "bạn"}, hãy nhắn tin hỏi bài, thảo luận hoặc tag @bot để hỏi...`}
-                    className="flex-1 text-xs border border-slate-200 rounded-2xl py-3 px-4 focus:outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 font-sans shadow-sm"
-                  />
+                {/* GIAO DIỆN CHAT 2 CỘT CHUYÊN NGHIỆP */}
+                <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
                   
-                  <button 
-                    type="submit"
-                    disabled={(!inputMessage.trim() && !chatImage) || chatLoading}
-                    className="px-5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white rounded-2xl transition-all cursor-pointer flex items-center justify-center shadow-md shadow-indigo-500/10"
-                  >
-                    <Send className="w-4 h-4" />
-                  </button>
-                </form>
-              </div>
+                  {/* CỘT PHẢI sidebar - CHỌN PHÒNG CHAT (CHANNELS) - Chỉ hiện trên desktop, tablet */}
+                  <div className="w-full md:w-56 bg-slate-50 border-b md:border-b-0 md:border-r border-slate-100 flex flex-col shrink-0">
+                    <div className="p-3 border-b border-indigo-200/20 hidden md:block">
+                      <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest font-mono">Bảng phòng học ({rooms.length})</span>
+                    </div>
 
-            </div>
-          )}
+                    {/* Phòng chat selectors dạng scroll ngang trên mobile, scroll dọc trên desktop */}
+                    <div className="flex flex-row md:flex-col overflow-x-auto md:overflow-y-auto p-2 gap-1.5 md:space-y-1 scrollbar-thin scrollbar-thumb-slate-300">
+                      {rooms.map((rm) => {
+                        const isActive = rm === currentRoom;
+                        return (
+                          <button
+                            key={rm}
+                            onClick={() => {
+                              setActiveRoom(rm);
+                            }}
+                            className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold cursor-pointer transition-all whitespace-nowrap min-w-max md:w-full ${
+                              isActive 
+                                ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/25 scale-102" 
+                                : "bg-white hover:bg-slate-100 text-slate-700 border border-slate-200/60 shadow-sm"
+                            }`}
+                          >
+                            <span className={`text-[10px] uppercase font-mono px-1.5 py-0.5 rounded-md ${isActive ? 'bg-indigo-700 text-indigo-50' : 'bg-slate-100 text-slate-500'}`}>
+                              #{rm === "ALL" ? "All" : rm}
+                            </span>
+                            <span className="truncate">{rm === "ALL" ? "Thông báo chung" : "Phòng chat lớp " + rm}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* CỘT CHÍNH - KHU VỰC CHAT */}
+                  <div className="flex-1 flex flex-col overflow-hidden bg-slate-50/50">
+                    
+                    {/* Lịch sử tin nhắn theo phòng */}
+                    <div className="flex-1 p-4 md:p-6 overflow-y-auto space-y-4 flex flex-col scrollbar-thin">
+                      
+                      {/* Banner Chào phòng học tập */}
+                      <div className="p-4 bg-indigo-50/60 border border-indigo-100 rounded-2xl mb-2 text-center">
+                        <p className="text-[11px] font-extrabold text-indigo-900 uppercase tracking-wider mb-1">
+                          {currentRoom === "ALL" ? "📢 Kênh Thông Báo Toàn Trường" : `💬 Kênh Thảo Luận Nhóm Lớp ${currentRoom}`}
+                        </p>
+                        <p className="text-[10px] text-indigo-750 font-sans">
+                          {currentRoom === "ALL" 
+                            ? "Nơi thầy cô Giáo viên & Ban giám hiệu phát đi thông báo khẩn cấp, nhắc nhở bài học cho toàn bộ thành viên học viên." 
+                            : `Kênh thảo luận học tập, trao đổi giải đáp thắc mắc nội bộ của các bạn sinh viên lớp học phần ${currentRoom}`}
+                        </p>
+                      </div>
+
+                      {chatMessages
+                        .filter(msg => (msg.room || "ALL").toUpperCase() === currentRoom.toUpperCase())
+                        .filter(msg => {
+                          const q = chatSearch.toLowerCase();
+                          return (msg.content || "").toLowerCase().includes(q) || (msg.senderName || "").toLowerCase().includes(q);
+                        }).length === 0 ? (
+                          <div className="flex-1 flex flex-col items-center justify-center text-slate-350 py-12 gap-2">
+                            <MessageCircle className="w-12 h-12 text-slate-300 stroke-1" />
+                            <p className="text-[11px] font-medium font-sans">Chưa có tin nhắn nào được ghi nhận trong kênh này.</p>
+                          </div>
+                        ) : (
+                          chatMessages
+                            .filter(msg => (msg.room || "ALL").toUpperCase() === currentRoom.toUpperCase())
+                            .filter(msg => {
+                              const q = chatSearch.toLowerCase();
+                              return (msg.content || "").toLowerCase().includes(q) || (msg.senderName || "").toLowerCase().includes(q);
+                            }).map((msg) => {
+                              const isMe = msg.senderId.trim().toUpperCase() === (currentUser?.id || "GUEST").trim().toUpperCase();
+                              const isTeacher = msg.senderRole === "Teacher" || msg.senderId.trim().toUpperCase() === "ADMIN";
+                              const isBot = msg.senderId === "BOT_ASSISTANT";
+
+                              return (
+                                <div 
+                                  key={msg.id} 
+                                  className={`flex items-start gap-2.5 max-w-[85%] ${
+                                    isMe ? 'ml-auto flex-row-reverse' : 'mr-auto'
+                                  }`}
+                                >
+                                  {/* Avatar */}
+                                  <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 text-xs font-bold shadow-sm ${
+                                    isMe 
+                                      ? 'bg-indigo-600 text-white' 
+                                      : isTeacher 
+                                        ? 'bg-amber-500 text-slate-900 border border-amber-300'
+                                        : isBot
+                                          ? 'bg-indigo-150 text-indigo-800 border border-indigo-200'
+                                          : 'bg-emerald-600 text-white'
+                                  }`}>
+                                    {isMe ? "TÔI" : isBot ? "AI" : msg.senderName.substring(0, 2).toUpperCase()}
+                                  </div>
+                                  
+                                  {/* Khung tin nhắn */}
+                                  <div className="flex flex-col space-y-1">
+                                    {/* Tên người gửi & Thời gian */}
+                                    <div className={`flex items-center gap-1.5 text-[10px] text-slate-400 ${isMe ? 'justify-end' : 'justify-start'}`}>
+                                      <span className={`font-bold ${isTeacher ? 'text-amber-600' : 'text-slate-600'}`}>
+                                        {msg.senderName}
+                                      </span>
+                                      {isTeacher && !isBot && (
+                                        <span className="px-1.5 py-0.2 bg-amber-100 text-amber-800 rounded font-bold scale-95 uppercase text-[8px]">Thầy</span>
+                                      )}
+                                      {isBot && (
+                                        <span className="px-1.5 py-0.2 bg-indigo-100 text-indigo-800 rounded font-bold scale-95 flex items-center gap-0.5 text-[8px]">
+                                          🤖 TRỢ LÝ
+                                        </span>
+                                      )}
+                                      <span>•</span>
+                                      <span className="font-mono">
+                                        {new Date(msg.time).toLocaleTimeString("vi-VN", { hour: '2-digit', minute: '2-digit' })}
+                                      </span>
+                                    </div>
+
+                                    {/* Văn bản tin nhắn */}
+                                    <div className={`p-3 rounded-2xl text-xs leading-relaxed shadow-sm border border-black/5 ${
+                                      isMe 
+                                        ? 'bg-indigo-600 text-white rounded-tr-none' 
+                                        : isTeacher
+                                          ? 'bg-amber-50 border-amber-100 text-slate-800 rounded-tl-none font-medium'
+                                          : isBot
+                                            ? 'bg-indigo-50/80 border-indigo-100 text-indigo-950 rounded-tl-none font-sans'
+                                            : 'bg-white text-slate-800 border-slate-100 rounded-tl-none'
+                                    }`}>
+                                      <p className="whitespace-pre-line font-sans">{msg.content}</p>
+                                      
+                                      {/* Render hình ảnh bài tập/góp ý đính kèm */}
+                                      {msg.imageUrl && (
+                                        <div className="mt-2.5 relative group overflow-hidden rounded-xl border border-dashed border-slate-300 bg-slate-100 max-w-sm">
+                                          <img 
+                                            src={msg.imageUrl} 
+                                            alt="Ảnh đính kèm" 
+                                            referrerPolicy="no-referrer"
+                                            className="max-h-48 w-full object-cover rounded-xl cursor-zoom-in group-hover:scale-102 transition-all"
+                                            onClick={() => setZoomImageUrl(msg.imageUrl || null)}
+                                          />
+                                          <div className="absolute inset-0 bg-transparent hover:bg-black/10 transition-colors flex items-center justify-center cursor-pointer pointer-events-none">
+                                            <Maximize2 className="w-5 h-5 text-white/0 group-hover:text-white/85 drop-shadow transition-all" />
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })
+                        )}
+
+                      {chatLoading && (
+                        <div className="flex items-start gap-2.5 max-w-[80%] mr-auto">
+                          <div className="w-8 h-8 rounded-xl bg-indigo-100 text-indigo-700 border border-indigo-200 flex items-center justify-center font-bold text-xs">
+                            AI
+                          </div>
+                          <div className="bg-white text-slate-500 border border-slate-100 p-4 rounded-2xl rounded-tl-none text-xs flex items-center gap-2 shadow-sm">
+                            <span className="flex gap-1.5">
+                              <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce"></span>
+                              <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce delay-100"></span>
+                              <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce delay-200"></span>
+                            </span>
+                            <span className="font-sans text-slate-400">Trợ lý AI lớp đang nhập phản hồi...</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Câu hỏi gợi ý nhanh để TAG BOT hỗ trợ */}
+                    {!isStudentInAllRoom && (
+                      <div className="px-6 py-2 bg-slate-100/50 border-t border-slate-100 overflow-x-auto whitespace-nowrap flex items-center gap-2">
+                        <span className="text-[10px] text-slate-400 uppercase font-bold shrink-0">Hỏi nhanh AI:</span>
+                        {[
+                          "@bot xem mã pin điểm danh hôm nay",
+                          "@bot bài tập lớp đã giao là gì?",
+                          "@bot tóm tắt cấu trúc cơ sở dữ liệu trên G-Suite"
+                        ].map((q, qidx) => (
+                          <button
+                            key={qidx}
+                            onClick={() => {
+                              setInputMessage(q);
+                            }}
+                            className="inline-block px-3 py-1.5 bg-white hover:bg-indigo-50 text-[10px] text-indigo-750 font-sans border border-slate-200 rounded-lg transition-all cursor-pointer shadow-sm"
+                          >
+                            {q}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* KHU VỰC NHẬP HẢO LUẬN - CHẶN NẾU HỌC SINH ĐỨNG Ở ROOM ALL */}
+                    {isStudentInAllRoom ? (
+                      <div className="p-4 bg-amber-50 border-t border-amber-100 flex items-center gap-3 text-amber-800">
+                        <AlertCircle className="w-5 h-5 shrink-0 text-amber-600 animate-bounce" />
+                        <div className="text-xs font-sans">
+                          <p className="font-bold">Kênh Thông Báo là Chỉ Đọc (Read-Only) đối với Sinh viên!</p>
+                          <p className="text-[11px] text-amber-700/90 mt-0.5">Vui lòng chuyển tiếp sang kênh Phòng chat riêng của Lớp bạn ở thanh Danh sách bên trái để có thể tự do thảo luận, gửi câu hỏi học thuật và nộp minh chứng bài tập cho Giáo viên.</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-4 bg-white border-t border-slate-100 flex flex-col gap-2">
+                        {/* Preview ảnh chuẩn bị gửi */}
+                        {chatImage && (
+                          <div className="flex items-center gap-2.5 p-2 bg-indigo-50 border border-indigo-100 rounded-xl max-w-sm animate-fade-in">
+                            <img 
+                              src={chatImage} 
+                              alt="Xem trước ảnh đính kèm" 
+                              className="w-12 h-12 object-cover rounded-lg border border-indigo-200 shadow-sm"
+                            />
+                            <div className="flex-1 overflow-hidden">
+                              <p className="text-[10px] text-indigo-900 font-bold truncate font-sans">Đính kèm: {chatImageFilename}</p>
+                              <p className="text-[9px] text-indigo-400 font-sans">Ảnh minh chứng muốn gửi</p>
+                            </div>
+                            <button 
+                              onClick={() => {
+                                setChatImage(null);
+                                setChatImageFilename("");
+                              }}
+                              className="p-1 px-2.5 rounded-lg bg-indigo-100 hover:bg-rose-100 hover:text-rose-600 text-indigo-750 text-[10px] font-bold cursor-pointer transition-colors"
+                            >
+                              ✕ Hủy bỏ
+                            </button>
+                          </div>
+                        )}
+
+                        <form onSubmit={handleSendChatMessage} className="flex gap-2">
+                          {/* Nut attach hinh anh */}
+                          <label 
+                            className={`px-3 bg-slate-50 hover:bg-slate-100 text-slate-500 hover:text-indigo-600 rounded-2xl border border-slate-200 transition-all cursor-pointer flex items-center justify-center shadow-sm relative group`}
+                            title="Đính kèm ảnh bài tập/góp ý"
+                          >
+                            <ImageIcon className="w-5 h-5" />
+                            <input 
+                              type="file" 
+                              accept="image/*"
+                              onChange={handleChatImageChange}
+                              className="hidden" 
+                            />
+                          </label>
+
+                          <input 
+                            type="text" 
+                            value={inputMessage}
+                            onChange={(e) => setInputMessage(e.target.value)}
+                            placeholder={chatImage ? `Viết ghi chú giải thích cho hình ảnh bài tập gửi lên phòng...` : `Chào em ${currentUser?.name || "bạn"}, hãy cùng nhắn hỏi bài lớp phòng #${currentRoom} hay tag @bot nhé...`}
+                            className="flex-1 text-xs border border-slate-200 rounded-2xl py-3 px-4 focus:outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 font-sans shadow-sm"
+                          />
+                          
+                          <button 
+                            type="submit"
+                            disabled={(!inputMessage.trim() && !chatImage) || chatLoading}
+                            className="px-5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white rounded-2xl transition-all cursor-pointer flex items-center justify-center shadow-md shadow-indigo-500/10"
+                          >
+                            <Send className="w-4 h-4" />
+                          </button>
+                        </form>
+                      </div>
+                    )}
+
+                  </div>
+
+                </div>
+
+              </div>
+            );
+          })()}
 
         </div>
       </main>
