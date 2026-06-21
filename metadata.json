@@ -1,0 +1,6 @@
+{
+  "name": "NTN Smart Attendance AI",
+  "description": "Hệ thống điểm danh và giao bài tập thông minh tích hợp Gemini AI cho sinh viên và giảng viên, giúp quản lý chuyên cần và bài tập qua G-Suite (Google Sheets & Drive) dễ dàng.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
