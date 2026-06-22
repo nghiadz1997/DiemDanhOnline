@@ -259,8 +259,34 @@ export default function App() {
       fetchDataSilent();
     }, 4000);
 
+    // Lắng nghe trạng thái đăng nhập Firebase Auth (Google Sign-In)
+    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        try {
+          const docRef = doc(firestoreDb, "users", user.uid);
+          const docSnap = await getDoc(docRef);
+          if (docSnap.exists()) {
+            const profile = docSnap.data() as AppUser;
+            localStorage.setItem("nsg_auth_user", JSON.stringify(profile));
+            setCurrentUser(profile);
+          } else {
+            // Chưa có profile, hiển thị màn hình Onboarding chọn vai trò và điền thông tin
+            setOnboardingUser({
+              uid: user.uid,
+              name: user.displayName || "",
+              email: user.email || ""
+            });
+            setOnboardingName(user.displayName || "");
+          }
+        } catch (err) {
+          console.error("Lỗi đồng bộ Firebase Auth profile từ Firestore:", err);
+        }
+      }
+    });
+
     return () => {
       clearInterval(interval);
+      unsubscribeAuth();
     };
   }, []);
 
@@ -283,35 +309,34 @@ export default function App() {
     setLoginError("");
     setLoginLoading(true);
     try {
-      if (!isOfflineMode) {
-        try {
-          const res = await fetch("/api/login", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              id: loginId.trim(),
-              password: loginPassword
-            })
-          });
-          const text = await res.text();
-          const data = JSON.parse(text);
-          if (data.success) {
-            localStorage.setItem("nsg_auth_user", JSON.stringify(data.user));
-            setCurrentUser(data.user);
-            setLoginLoading(false);
-            return;
-          } else {
-            setLoginError(data.error || "Mã tài khoản hoặc mật khẩu không đúng!");
-            setLoginLoading(false);
-            return;
-          }
-        } catch (apiErr) {
-          console.warn("Gọi API login thất bại, chạy local login fallback", apiErr);
-          setIsOfflineMode(true);
+      let loginSuccess = false;
+      try {
+        const res = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: loginId.trim(),
+            password: loginPassword
+          })
+        });
+        const text = await res.text();
+        const data = JSON.parse(text);
+        if (data.success) {
+          localStorage.setItem("nsg_auth_user", JSON.stringify(data.user));
+          setCurrentUser(data.user);
+          setLoginLoading(false);
+          setIsOfflineMode(false);
+          return;
+        } else {
+          setLoginError(data.error || "Mã tài khoản hoặc mật khẩu không đúng!");
+          setLoginLoading(false);
+          return;
         }
+      } catch (apiErr) {
+        console.warn("Gọi API login thất bại, chạy local login fallback", apiErr);
       }
 
-      // Local login fallback
+      // Local/Offline login fallback (Nếu mất mạng hoàn toàn)
       const ldb = getLocalDB();
       const matchedUser = ldb.users.find(
         (u: any) => u.id.toLowerCase() === loginId.trim().toLowerCase() && u.password === loginPassword
@@ -320,8 +345,9 @@ export default function App() {
         const publicUser = { id: matchedUser.id, name: matchedUser.name, role: matchedUser.role, className: matchedUser.className };
         localStorage.setItem("nsg_auth_user", JSON.stringify(publicUser));
         setCurrentUser(publicUser);
+        setIsOfflineMode(true);
       } else {
-        setLoginError("Mã tài khoản hoặc mật khẩu không đúng!");
+        setLoginError("Không thể kết nối máy chủ xác thực và tài khoản này không có sẵn ngoại tuyến!");
       }
     } catch (err: any) {
       setLoginError("Không thể kết nối máy chủ xác thực: " + err.message);
@@ -344,42 +370,40 @@ export default function App() {
     const finalRegClassName = regClassName.trim();
 
     try {
-      if (!isOfflineMode) {
-        try {
-          const res = await fetch("/api/register", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              id: finalRegId,
-              name: finalRegName,
-              className: finalRegClassName,
-              password: regPassword
-            })
-          });
-          const text = await res.text();
-          const data = JSON.parse(text);
-          if (res.ok && data.success) {
-            alert(`Chúc mừng ${finalRegName}! Đã đăng ký tài khoản thành công.`);
-            setLoginId(finalRegId);
-            setLoginPassword(regPassword);
-            setLoginRole("Student");
-            setIsRegistering(false);
-            setRegId("");
-            setRegName("");
-            setRegPassword("");
-            fetchData();
-            return;
-          } else {
-            setRegError(data.error || "Mã sinh viên này đã có người đăng ký!");
-            return;
-          }
-        } catch (apiErr) {
-          console.warn("Gọi API register thất bại, chạy local register fallback", apiErr);
-          setIsOfflineMode(true);
+      try {
+        const res = await fetch("/api/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: finalRegId,
+            name: finalRegName,
+            className: finalRegClassName,
+            password: regPassword
+          })
+        });
+        const text = await res.text();
+        const data = JSON.parse(text);
+        if (res.ok && data.success) {
+          alert(`Chúc mừng ${finalRegName}! Đã đăng ký tài khoản thành công.`);
+          setLoginId(finalRegId);
+          setLoginPassword(regPassword);
+          setLoginRole("Student");
+          setIsRegistering(false);
+          setRegId("");
+          setRegName("");
+          setRegPassword("");
+          setIsOfflineMode(false);
+          fetchData();
+          return;
+        } else {
+          setRegError(data.error || "Mã sinh viên này đã có người đăng ký!");
+          return;
         }
+      } catch (apiErr) {
+        console.warn("Gọi API register thất bại, chạy local register fallback", apiErr);
       }
 
-      // Local register fallback
+      // Local/Offline register fallback
       const ldb = getLocalDB();
       const userExists = ldb.users.some((u: any) => u.id.toLowerCase() === finalRegId.toLowerCase());
       if (userExists) {
@@ -402,6 +426,7 @@ export default function App() {
         setRegId("");
         setRegName("");
         setRegPassword("");
+        setIsOfflineMode(true);
         fetchData();
       }
     } catch (err: any) {
