@@ -87,7 +87,31 @@ interface ChatMessage {
 }
 
 import fs from "fs";
+import { initializeApp as initAdminApp, getApps as getAdminApps } from "firebase-admin/app";
+import { getFirestore as getAdminFirestore } from "firebase-admin/firestore";
+
 const DB_FILE = path.join(process.cwd(), "database.json");
+
+// Khởi tạo Firebase Admin kết nối Firestore tập trung
+let adminDb: any = null;
+try {
+  const configPath = path.join(process.cwd(), "firebase-applet-config.json");
+  let projectId = undefined;
+  if (fs.existsSync(configPath)) {
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    projectId = config.projectId;
+  }
+  
+  if (getAdminApps().length === 0) {
+    initAdminApp({
+      projectId: projectId || process.env.GCLOUD_PROJECT
+    });
+  }
+  adminDb = getAdminFirestore();
+  console.log("--> [ADMIN] Firebase Admin kết nối Firestore thành công!");
+} catch (err) {
+  console.error("Lỗi cấu hình Firebase Admin:", err);
+}
 
 // Khởi tạo cơ sở dữ liệu rỗng chạy thật thực tế (Chỉ có thầy Nguyễn Trọng Nghĩa)
 let users: User[] = [
@@ -110,8 +134,8 @@ let chatMessages: ChatMessage[] = [
   }
 ];
 
-// Helper lưu dữ liệu ra file backup trên Server
-function saveServerData() {
+// Helper lưu dữ liệu ra file backup trên Server và sync lên Firestore
+async function saveServerData() {
   try {
     const data = {
       users,
@@ -123,14 +147,21 @@ function saveServerData() {
     };
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf8");
     console.log("--> Đã sao lưu dữ liệu tập trung mới vào database.json");
+
+    if (adminDb) {
+      const docRef = adminDb.collection("system_state").doc("database");
+      await docRef.set(data);
+      console.log("--> Đã đồng bộ thành công trạng thái mới lên Firestore!");
+    }
   } catch (err) {
-    console.warn("Lỗi lưu file database.json backup:", err);
+    console.warn("Lỗi lưu file database.json backup / Firestore:", err);
   }
 }
 
-// Helper tải dữ liệu từ file backup trên Server
-function loadServerData() {
+// Helper tải dữ liệu từ file backup trên Server và đồng bộ đè từ Firestore hỏa tốc
+async function loadServerData() {
   try {
+    // 1. Tìm bản lưu cục bộ trước làm mốc cơ sở
     if (fs.existsSync(DB_FILE)) {
       const content = fs.readFileSync(DB_FILE, "utf8");
       const data = JSON.parse(content);
@@ -143,11 +174,41 @@ function loadServerData() {
         if (Array.isArray(data.chatMessages)) chatMessages = data.chatMessages;
         console.log("--> Đã nạp thành công dữ liệu từ database.json server!");
       }
-    } else {
-      saveServerData();
+    }
+    
+    // 2. Đồng bộ đè từ Firestore (đảm bảo cập nhật mới nhất từ các container khác)
+    if (adminDb) {
+      console.log("--> Đang tải dữ liệu đồng bộ mượt mà từ Firestore...");
+      const docRef = adminDb.collection("system_state").doc("database");
+      const docSnap = await docRef.get();
+      if (docSnap.exists) {
+        const data = docSnap.data();
+        if (data) {
+          if (Array.isArray(data.users)) users = data.users;
+          if (Array.isArray(data.attendanceSessions)) attendanceSessions = data.attendanceSessions;
+          if (Array.isArray(data.attendanceLogs)) attendanceLogs = data.attendanceLogs;
+          if (Array.isArray(data.assignments)) assignments = data.assignments;
+          if (Array.isArray(data.submissions)) submissions = data.submissions;
+          if (Array.isArray(data.chatMessages)) chatMessages = data.chatMessages;
+          console.log("--> Nạp dữ liệu đồng bộ Firestore thành công!");
+          
+          fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf8");
+        }
+      } else {
+        console.log("--> Chưa tìm thấy mốc Firestore, khởi tạo trạng thái lên Firestore...");
+        const data = {
+          users,
+          attendanceSessions,
+          attendanceLogs,
+          assignments,
+          submissions,
+          chatMessages
+        };
+        await docRef.set(data);
+      }
     }
   } catch (err) {
-    console.warn("Lỗi đọc file database.json backup:", err);
+    console.warn("Lỗi đọc file database.json backup / Firestore:", err);
   }
 }
 
@@ -169,7 +230,49 @@ async function syncFromGoogleSheets() {
       const data: any = await res.json();
       if (data && data.success) {
         if (data.users && data.users.length > 0) {
-          users = data.users;
+          const sheetUsers = data.users;
+
+          // Map current users in cache/file for fast lookup and password preservation
+          const currentUsersMap = new Map<string, User>();
+          users.forEach(u => currentUsersMap.set(u.id.toLowerCase(), u));
+
+          const mergedUsersMap = new Map<string, User>();
+
+          // Insert or update users from Sheets
+          sheetUsers.forEach((sheetUser: any) => {
+            const idKey = String(sheetUser.id).trim().toLowerCase();
+            const existing = currentUsersMap.get(idKey);
+
+            mergedUsersMap.set(idKey, {
+              id: String(sheetUser.id).trim(),
+              name: sheetUser.name || (existing ? existing.name : ""),
+              className: sheetUser.className || (existing ? existing.className : "CNTT"),
+              role: sheetUser.role || (existing ? existing.role : "Student"),
+              email: sheetUser.email || (existing ? existing.email : ""),
+              password: sheetUser.password || (existing && existing.password ? existing.password : "123456")
+            });
+          });
+
+          // Retain local users created on-the-fly but not yet sent/synced to sheets
+          users.forEach((localUser) => {
+            const idKey = localUser.id.toLowerCase();
+            if (!mergedUsersMap.has(idKey)) {
+              mergedUsersMap.set(idKey, localUser);
+            }
+          });
+
+          // Always ensure admin profile exists
+          const adminKey = "admin";
+          const currentAdmin = currentUsersMap.get(adminKey);
+          mergedUsersMap.set(adminKey, {
+            id: "admin",
+            name: "Thầy Nguyễn Trọng Nghĩa",
+            role: "Teacher",
+            className: "ALL",
+            password: currentAdmin?.password || "Nsg@2026"
+          });
+
+          users = Array.from(mergedUsersMap.values());
         }
         if (data.attendanceSessions) {
           attendanceSessions = data.attendanceSessions;
@@ -239,6 +342,7 @@ app.post("/api/config", async (req, res) => {
 
 // 1. Lấy toàn bộ dữ liệu hiện tại
 app.get("/api/data", async (req, res) => {
+  await loadServerData();
   if (googleScriptUrl) {
     await syncFromGoogleSheets();
   }
@@ -253,7 +357,8 @@ app.get("/api/data", async (req, res) => {
 });
 
 // Endpoint đăng nhập tài khoản hệ thống (Giảng viên hoặc Học sinh)
-app.post("/api/login", (req, res) => {
+app.post("/api/login", async (req, res) => {
+  await loadServerData();
   const { id, password } = req.body;
   if (!id || !password) {
     return res.status(400).json({ success: false, error: "Vui lòng nhập đầy đủ Mã tài khoản và Mật khẩu!" });
@@ -265,7 +370,7 @@ app.post("/api/login", (req, res) => {
   }
 
   // Chấp nhận mật khẩu "123456" cho tất cả học tài khoản cấp hoặc mật khẩu chính xác nếu lưu
-  const isMatch = (password === "123456" || user.password === password);
+  const isMatch = (String(password).trim() === "123456" || String(user.password).trim() === String(password).trim());
   if (!isMatch) {
     return res.status(401).json({ success: false, error: "Mật khẩu không chính xác! (Mật khẩu mặc định cấp là 123456)" });
   }
@@ -667,7 +772,7 @@ app.post("/api/register", async (req, res) => {
       if (gasRes.ok) {
         const gasData: any = await gasRes.json();
         if (gasData && gasData.success === false) {
-          return res.status(400).json({ success: false, error: gasData.error || "Ghi nhận vào Google Sheets thất bại" });
+          console.warn("Ghi nhận vào Google Sheets thất bại (success = false):", gasData.error);
         }
       }
     } catch (err: any) {
@@ -748,7 +853,7 @@ app.post("/api/users/create", async (req, res) => {
       if (gasRes.ok) {
         const gasData: any = await gasRes.json();
         if (gasData && gasData.success === false) {
-          return res.status(400).json({ error: gasData.error || "Ghi nhận vào Google Sheets thất bại" });
+          console.warn("Ghi nhận người dùng vào Google Sheets thất bại (success = false):", gasData.error);
         }
       }
     } catch (err: any) {

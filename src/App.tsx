@@ -1238,23 +1238,7 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
   }).length;
 
   const getAvailableRooms = () => {
-    if (!currentUser) return ["ALL"];
-    if (currentUser.role === "Teacher" || currentUser.role === "Admin") {
-      const uniqueClassNames = Array.from(new Set(
-        (db.users || [])
-          .filter((u: any) => u.className && u.className.trim().toUpperCase() !== "ALL")
-          .map((u: any) => u.className.trim().toUpperCase())
-      )).filter(Boolean).sort();
-      
-      // Fallback representing classrooms
-      if (uniqueClassNames.length === 0) {
-        uniqueClassNames.push("CNTT", "KTPM");
-      }
-      return ["ALL", ...uniqueClassNames];
-    } else {
-      const studentClass = (currentUser.className || "").trim().toUpperCase();
-      return studentClass && studentClass !== "ALL" ? ["ALL", studentClass] : ["ALL"];
-    }
+    return ["ALL"];
   };
 
   if (!currentUser) {
@@ -2612,43 +2596,8 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
                   </div>
                 </div>
 
-                {/* GIAO DIỆN CHAT 2 CỘT CHUYÊN NGHIỆP */}
-                <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-                  
-                  {/* CỘT PHẢI sidebar - CHỌN PHÒNG CHAT (CHANNELS) - Chỉ hiện trên desktop, tablet */}
-                  <div className="w-full md:w-56 bg-slate-50 border-b md:border-b-0 md:border-r border-slate-100 flex flex-col shrink-0">
-                    <div className="p-3 border-b border-indigo-200/20 hidden md:block">
-                      <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest font-mono">Bảng phòng học ({rooms.length})</span>
-                    </div>
-
-                    {/* Phòng chat selectors dạng scroll ngang trên mobile, scroll dọc trên desktop */}
-                    <div className="flex flex-row md:flex-col overflow-x-auto md:overflow-y-auto p-2 gap-1.5 md:space-y-1 scrollbar-thin scrollbar-thumb-slate-300">
-                      {rooms.map((rm) => {
-                        const isActive = rm === currentRoom;
-                        return (
-                          <button
-                            key={rm}
-                            onClick={() => {
-                              setActiveRoom(rm);
-                            }}
-                            className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold cursor-pointer transition-all whitespace-nowrap min-w-max md:w-full ${
-                              isActive 
-                                ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/25 scale-102" 
-                                : "bg-white hover:bg-slate-100 text-slate-700 border border-slate-200/60 shadow-sm"
-                            }`}
-                          >
-                            <span className={`text-[10px] uppercase font-mono px-1.5 py-0.5 rounded-md ${isActive ? 'bg-indigo-700 text-indigo-50' : 'bg-slate-100 text-slate-500'}`}>
-                              #{rm === "ALL" ? "All" : rm}
-                            </span>
-                            <span className="truncate">{rm === "ALL" ? "Thông báo chung" : "Phòng chat lớp " + rm}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* CỘT CHÍNH - KHU VỰC CHAT */}
-                  <div className="flex-1 flex flex-col overflow-hidden bg-slate-50/50">
+                {/* GIAO DIỆN CHAT ĐƠN GIẢN CHỈ CÓ KÊNH THÔNG BÁO CHUNG */}
+                <div className="flex-1 flex flex-col overflow-hidden bg-slate-50/50">
                     
                     {/* Lịch sử tin nhắn theo phòng */}
                     <div className="flex-1 p-4 md:p-6 overflow-y-auto space-y-4 flex flex-col scrollbar-thin">
@@ -2875,8 +2824,6 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
                   </div>
 
                 </div>
-
-              </div>
             );
           })()}
 
