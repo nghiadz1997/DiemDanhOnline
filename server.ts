@@ -215,6 +215,18 @@ async function loadServerData() {
 // Tự động nạp dữ liệu khi bật máy chủ
 loadServerData();
 
+// Middleware phục hồi và đồng bộ dữ liệu đè từ Firestore/database.json trước khi xử lý mọi request API chính thức để tránh Race Condition hoặc mất đồng bộ bất kỳ
+app.use(async (req, res, next) => {
+  if (req.path.startsWith("/api") && req.path !== "/api/config") {
+    try {
+      await loadServerData();
+    } catch (err) {
+      console.warn("Middleware loadServerData failed:", err);
+    }
+  }
+  next();
+});
+
 let googleScriptUrl = process.env.GOOGLE_SCRIPT_URL || "";
 
 // Đồng bộ hóa với Google Sheets qua Google Apps Script Web App
@@ -314,7 +326,7 @@ async function syncFromGoogleSheets() {
           chatMessages = Array.from(sheetMsgMap.values()).sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
         }
         console.log("Successfully synchronized database with Google Sheets!");
-        saveServerData();
+        await saveServerData();
       }
     }
   } catch (err) {
@@ -432,7 +444,7 @@ app.post("/api/attendance-session/create", async (req, res) => {
   }
 
   attendanceSessions.unshift(newSession); // Đưa lên đầu
-  saveServerData();
+  await saveServerData();
   res.json({ success: true, session: newSession });
 });
 
@@ -524,7 +536,7 @@ app.post("/api/attendance/submit", async (req, res) => {
     }
   });
 
-  saveServerData();
+  await saveServerData();
   res.json({ success: true, log: newLog });
 });
 
@@ -574,7 +586,7 @@ app.post("/api/assignment/create", async (req, res) => {
   }
 
   assignments.unshift(newAsm);
-  saveServerData();
+  await saveServerData();
   res.json({ success: true, assignment: newAsm });
 });
 
@@ -637,7 +649,7 @@ app.post("/api/assignment/submit", async (req, res) => {
           submissions.push(newSub);
         }
 
-        saveServerData();
+        await saveServerData();
         return res.json({ success: true, submission: newSub });
       } else {
         return res.status(500).json({ error: gasData?.error || "Apps Script báo lỗi không thể lưu tệp" });
@@ -671,7 +683,7 @@ app.post("/api/assignment/submit", async (req, res) => {
     submissions.push(newSub);
   }
 
-  saveServerData();
+  await saveServerData();
   res.json({ success: true, submission: newSub });
 });
 
@@ -781,7 +793,7 @@ app.post("/api/register", async (req, res) => {
   }
 
   users.push(newUser);
-  saveServerData();
+  await saveServerData();
   res.json({ success: true, user: newUser });
 });
 
@@ -795,7 +807,7 @@ app.post("/api/users/update-id", async (req, res) => {
   if (index >= 0) {
     users[index].id = newId;
     if (email) users[index].email = email;
-    saveServerData();
+    await saveServerData();
   }
 
   if (googleScriptUrl) {
@@ -862,7 +874,7 @@ app.post("/api/users/create", async (req, res) => {
   }
 
   users.push(newUser);
-  saveServerData();
+  await saveServerData();
   res.json({ success: true, user: newUser });
 });
 
@@ -900,7 +912,7 @@ app.delete("/api/users/delete/:id", async (req, res) => {
   }
 
   users.splice(index, 1);
-  saveServerData();
+  await saveServerData();
   res.json({ success: true });
 });
 
@@ -1255,13 +1267,13 @@ Xưng hô là "Trợ lý AI" và gọi thành viên hỏi là "Em" hoặc "Bạn
   }
 
   chatMessages.push(newMsg);
-  saveServerData();
+  await saveServerData();
 
   res.json({ success: true, message: newMsg, aiMessage: aiMsg });
 });
 
 // Reset toàn bộ tin nhắn nhóm chat về tin mặc định ban đầu
-app.post("/api/chat/clean", (req, res) => {
+app.post("/api/chat/clean", async (req, res) => {
   chatMessages = [
     {
       id: "MSG_INIT_1",
@@ -1273,7 +1285,7 @@ app.post("/api/chat/clean", (req, res) => {
       room: "ALL"
     }
   ];
-  saveServerData();
+  await saveServerData();
   res.json({ success: true, chatMessages });
 });
 
