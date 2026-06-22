@@ -1,0 +1,85 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile in NTN Smart Attendance AI",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Firebase user uid"
+        },
+        "name": {
+          "type": "string",
+          "description": "Full name"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["Admin", "Teacher", "Student"],
+          "description": "User role"
+        },
+        "className": {
+          "type": "string",
+          "description": "Class code"
+        },
+        "email": {
+          "type": "string",
+          "description": "User Google email address"
+        }
+      },
+      "required": ["id", "name", "role", "className", "email"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Chat message in a specific chat room",
+      "type": "object",
+      "properties": {
+        "senderId": {
+          "type": "string",
+          "description": "ID of sender"
+        },
+        "senderName": {
+          "type": "string",
+          "description": "Display name of sender"
+        },
+        "senderEmail": {
+          "type": "string",
+          "description": "Email of sender"
+        },
+        "senderRole": {
+          "type": "string",
+          "enum": ["Student", "Teacher", "Admin"],
+          "description": "Role of sender"
+        },
+        "message": {
+          "type": "string",
+          "description": "Text message content"
+        },
+        "attachmentUrl": {
+          "type": "string",
+          "description": "URL to attached image or file"
+        },
+        "attachmentFileId": {
+          "type": "string",
+          "description": "Google Drive File ID if attached"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when message was sent"
+        }
+      },
+      "required": ["senderId", "senderName", "senderEmail", "senderRole", "message", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Collection of registered user profiles"
+    },
+    "/chat_rooms/{roomId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Subcollection of messages inside a chat room"
+    }
+  }
+}

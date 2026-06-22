@@ -3,6 +3,7 @@ export interface User {
   name: string;
   role: "Admin" | "Teacher" | "Student";
   className: string;
+  email?: string;
 }
 
 export interface AttendanceSession {

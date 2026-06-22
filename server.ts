@@ -34,6 +34,7 @@ interface User {
   role: "Admin" | "Teacher" | "Student"; // Vai trò
   className: string; // Mã Lớp
   password?: string; // Mật khẩu đăng nhập
+  email?: string; // Địa chỉ email đăng nhập
 }
 
 interface AttendanceSession {
@@ -633,23 +634,24 @@ app.get("/api/submissions/download/:fileId", async (req, res) => {
 
 // API Đăng ký tài khoản Sinh viên mới (Chạy Thật)
 app.post("/api/register", async (req, res) => {
-  const { id, name, className, password } = req.body;
-  if (!id || !name || !className || !password) {
+  const { id, name, className, password, email, role } = req.body;
+  if (!id || !name || !className) {
     return res.status(400).json({ success: false, error: "Vui lòng nhập đầy đủ các trường tuyển sinh!" });
   }
 
-  const normalizedId = String(id).trim().toUpperCase();
-  const existingUser = users.find(u => u.id.toUpperCase() === normalizedId);
+  const normalizedId = String(id).trim();
+  const existingUser = users.find(u => u.id.toLowerCase() === normalizedId.toLowerCase());
   if (existingUser) {
-    return res.status(400).json({ success: false, error: "Mã Sinh viên này đã tồn tại trên hệ thống!" });
+    return res.status(400).json({ success: false, error: "Mã tài khoản này đã tồn tại trên hệ thống!" });
   }
 
   const newUser: User = {
     id: normalizedId,
     name: String(name).trim(),
-    role: "Student",
+    role: role || "Student",
     className: String(className).trim(),
-    password: String(password).trim()
+    password: password ? String(password).trim() : "123456",
+    email: email ? String(email).trim() : ""
   };
 
   if (googleScriptUrl) {
@@ -678,15 +680,48 @@ app.post("/api/register", async (req, res) => {
   res.json({ success: true, user: newUser });
 });
 
-// API Thêm học sinh từ Dashboard Quản lý Giáo viên
-app.post("/api/users/create", async (req, res) => {
-  const { id, name, role, className, password } = req.body;
-  if (!id || !name || !className || !password) {
-    return res.status(400).json({ error: "Vui lòng điền đầy đủ Mã tài khoản, Họ Tên, Mật khẩu & Lớp học!" });
+app.post("/api/users/update-id", async (req, res) => {
+  const { oldId, newId, email } = req.body;
+  if (!oldId || !newId) {
+    return res.status(400).json({ error: "Thiếu thông tin cập nhật ID" });
   }
 
-  const normalizedId = String(id).trim().toUpperCase();
-  const existingUser = users.find(u => u.id.toUpperCase() === normalizedId);
+  const index = users.findIndex(u => u.id.toLowerCase() === oldId.toLowerCase());
+  if (index >= 0) {
+    users[index].id = newId;
+    if (email) users[index].email = email;
+    saveServerData();
+  }
+
+  if (googleScriptUrl) {
+    try {
+      await fetch(googleScriptUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "updateUserId",
+          oldId,
+          newId,
+          email
+        })
+      });
+    } catch (e) {
+      console.warn("Lỗi đồng bộ cập nhật ID lên Google Sheets:", e);
+    }
+  }
+
+  res.json({ success: true });
+});
+
+// API Thêm học sinh từ Dashboard Quản lý Giáo viên
+app.post("/api/users/create", async (req, res) => {
+  const { id, name, role, className, password, email } = req.body;
+  if (!id || !name || !className) {
+    return res.status(400).json({ error: "Vui lòng điền đầy đủ Mã tài khoản, Họ Tên, Lớp học!" });
+  }
+
+  const normalizedId = String(id).trim();
+  const existingUser = users.find(u => u.id.toLowerCase() === normalizedId.toLowerCase());
   if (existingUser) {
     return res.status(400).json({ error: "Mã tài khoản này đã tồn tại!" });
   }
@@ -696,7 +731,8 @@ app.post("/api/users/create", async (req, res) => {
     name: String(name).trim(),
     role: role || "Student",
     className: String(className).trim(),
-    password: String(password).trim()
+    password: password ? String(password).trim() : "123456",
+    email: email ? String(email).trim() : ""
   };
 
   if (googleScriptUrl) {
@@ -1046,8 +1082,7 @@ app.post("/api/chat/send", async (req, res) => {
     }
   }
 
-  chatMessages.push(newMsg);
-  saveServerData();
+  let aiMsg: ChatMessage | null = null;
 
   // Phản hồi của Trợ lý AI khi có nội dung nhắc tới @bot hoặc @ai hoặc @trợ lý
   const upperContent = (content || "").toUpperCase();
@@ -1102,23 +1137,22 @@ Xưng hô là "Trợ lý AI" và gọi thành viên hỏi là "Em" hoặc "Bạn
       }
     }
 
-    // Đẩy phản hồi của Bot sau 1.2s
-    setTimeout(() => {
-      const aiMsg: ChatMessage = {
-        id: "MSG_AI_" + Date.now().toString(),
-        senderId: "BOT_ASSISTANT",
-        senderName: "Trợ lý AI (Bot)",
-        senderRole: "Teacher",
-        content: aiReply,
-        time: new Date().toISOString(),
-        room: activeRoom
-      };
-      chatMessages.push(aiMsg);
-      saveServerData();
-    }, 1200);
+    aiMsg = {
+      id: "MSG_AI_" + Date.now().toString(),
+      senderId: "BOT_ASSISTANT",
+      senderName: "Trợ lý AI (Bot)",
+      senderRole: "Teacher",
+      content: aiReply,
+      time: new Date().toISOString(),
+      room: activeRoom
+    };
+    chatMessages.push(aiMsg);
   }
 
-  res.json({ success: true, message: newMsg });
+  chatMessages.push(newMsg);
+  saveServerData();
+
+  res.json({ success: true, message: newMsg, aiMessage: aiMsg });
 });
 
 // Reset toàn bộ tin nhắn nhóm chat về tin mặc định ban đầu

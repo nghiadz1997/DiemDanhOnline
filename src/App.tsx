@@ -35,6 +35,11 @@ import GoogleAppsScriptCode from "./components/GoogleAppsScriptCode";
 import { AttendanceChart } from "./components/AttendanceChart";
 import { DatabaseState, AttendanceSession, AttendanceLog, Assignment, Submission, User as AppUser, ChatMessage } from "./types";
 
+// Firebase Integration
+import { auth, db as firestoreDb, googleProvider } from "./lib/firebase";
+import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { doc, getDoc, setDoc, collection, onSnapshot, query, orderBy, deleteDoc, addDoc, updateDoc, getDocs, writeBatch } from "firebase/firestore";
+
 export default function App() {
   // Trạng thái đăng nhập tài khoản
   const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
@@ -94,6 +99,13 @@ export default function App() {
   const [addStudentName, setAddStudentName] = useState("");
   const [addStudentClass, setAddStudentClass] = useState("");
   const [addStudentPassword, setAddStudentPassword] = useState("123456");
+  const [addStudentEmail, setAddStudentEmail] = useState("");
+
+  // Firebase Onboarding States
+  const [onboardingUser, setOnboardingUser] = useState<{ uid: string; name: string; email: string } | null>(null);
+  const [onboardingName, setOnboardingName] = useState("");
+  const [onboardingRole, setOnboardingRole] = useState<"Student" | "Teacher">("Student");
+  const [onboardingClassName, setOnboardingClassName] = useState("");
 
   // State xem trước bài nộp trực tiếp (In-app file viewer)
   const [previewSubmission, setPreviewSubmission] = useState<Submission | null>(null);
@@ -240,7 +252,10 @@ export default function App() {
     const interval = setInterval(() => {
       fetchDataSilent();
     }, 4000);
-    return () => clearInterval(interval);
+
+    return () => {
+      clearInterval(interval);
+    };
   }, []);
 
   // Tự động đồng bộ vai trò và mã sinh viên khi đăng nhập
@@ -388,8 +403,78 @@ export default function App() {
     }
   };
 
+  // Hành động Đăng nhập Google Auth
+  const handleGoogleLogin = async () => {
+    setLoginError("");
+    setLoginLoading(true);
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (err: any) {
+      console.error("Lỗi Google Sign In:", err);
+      setLoginError("Đăng nhập với Google thất bại: " + err.message);
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  // Hoàn tất Onboarding khi chưa có Profile tài khoản
+  const handleOnboardingSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onboardingUser) return;
+    if (!onboardingName.trim()) {
+      alert("Vui lòng điền Họ và tên của bạn!");
+      return;
+    }
+    if (onboardingRole === "Student" && !onboardingClassName.trim()) {
+      alert("Sinh viên vui lòng điền mã lớp học!");
+      return;
+    }
+
+    setLoginLoading(true);
+    const finalClassName = onboardingRole === "Teacher" ? "ALL" : onboardingClassName.trim().toUpperCase();
+    const profile: AppUser = {
+      id: onboardingUser.uid,
+      name: onboardingName.trim(),
+      role: onboardingRole,
+      className: finalClassName,
+      email: onboardingUser.email
+    };
+
+    try {
+      // 1. Lưu trữ ở Firestore Tập trung
+      await setDoc(doc(firestoreDb, "users", onboardingUser.uid), profile);
+
+      // 2. Đồng bộ sang Google Sheets & Local JSON của Server
+      await fetch("/api/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: onboardingUser.uid,
+          name: onboardingName.trim(),
+          role: onboardingRole,
+          className: finalClassName,
+          email: onboardingUser.email
+        })
+      });
+
+      localStorage.setItem("nsg_auth_user", JSON.stringify(profile));
+      setCurrentUser(profile);
+      setOnboardingUser(null);
+    } catch (err: any) {
+      console.error("Lỗi hoàn tất onboarding:", err);
+      alert("Không thể lưu profile: " + err.message);
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
   // Hành động Đăng xuất
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (e) {
+      console.error("Lỗi đăng xuất Firebase Auth:", e);
+    }
     localStorage.removeItem("nsg_auth_user");
     setCurrentUser(null);
     setLoginId("");
@@ -523,6 +608,14 @@ export default function App() {
               text: `Chúc mừng bạn! Điểm danh thành công lớp học. Trạng thái: ${data.log.status}` 
             });
             setPinCode("");
+            
+            // Đồng bộ trực tiếp lên Firestore
+            try {
+              await setDoc(doc(firestoreDb, "attendance_logs", data.log.id), data.log);
+            } catch (fireErr) {
+              console.warn("Lỗi ghi nhận điểm danh lên Firestore:", fireErr);
+            }
+
             fetchData();
             return;
           } else {
@@ -705,6 +798,14 @@ export default function App() {
                 text: `🎉 Nộp bài thành công! File đã được tự động lưu trữ vào Thư mục Google Drive của giảng viên và tạo liên kết chia sẻ quyền xem.`,
                 link: data.submission.driveUrl
               });
+
+              // Đồng bộ trực tiếp lên Firestore
+              try {
+                await setDoc(doc(firestoreDb, "submissions", data.submission.id), data.submission);
+              } catch (fireErr) {
+                console.warn("Lỗi đồng bộ submissions lên Firestore:", fireErr);
+              }
+
               setStudentSubmissionFile(null);
               fetchData();
               setIsSubmittingFile(false);
@@ -771,6 +872,7 @@ export default function App() {
     const sName = addStudentName.trim();
     const sClass = addStudentClass.trim();
     const sPass = addStudentPassword.trim() || "123456";
+    const sEmail = addStudentEmail.trim();
 
     try {
       if (!isOfflineMode) {
@@ -783,6 +885,7 @@ export default function App() {
               name: sName,
               className: sClass,
               password: sPass,
+              email: sEmail,
               role: "Student"
             })
           });
@@ -793,6 +896,7 @@ export default function App() {
             setAddStudentId("");
             setAddStudentName("");
             setAddStudentPassword("123456"); // Mặc định reset
+            setAddStudentEmail("");
             fetchData();
             return;
           } else {
@@ -817,7 +921,8 @@ export default function App() {
         name: sName,
         className: sClass,
         role: "Student" as const,
-        password: sPass
+        password: sPass,
+        email: sEmail
       };
 
       ldb.users.push(newUser);
@@ -826,6 +931,7 @@ export default function App() {
       setAddStudentId("");
       setAddStudentName("");
       setAddStudentPassword("123456");
+      setAddStudentEmail("");
       fetchData();
     } catch (err: any) {
       alert("Lỗi kết nối máy chủ quản lý: " + err.message);
@@ -981,17 +1087,23 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
         if (data.success) {
           isSentOnServer = true;
           setIsOfflineMode(false);
-          setChatMessages(prev => {
-            const exists = prev.some(m => m.id === data.message.id);
-            if (exists) return prev;
-            const filtered = prev.filter(m => !m.id.startsWith("MSG_OFFLINE_") || m.content !== textMsg);
-            return [...filtered, data.message].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+          
+          // Ghi đè trực tiếp lên Firestore để kích hoạt onSnapshot đồng bộ tức thì
+          const userMsg = data.message;
+          await setDoc(doc(firestoreDb, "chat_rooms", activeRoom, "messages", userMsg.id), {
+            ...userMsg,
+            time: userMsg.time || new Date().toISOString()
           });
+
+          if (data.aiMessage) {
+            const aiMsg = data.aiMessage;
+            await setDoc(doc(firestoreDb, "chat_rooms", activeRoom, "messages", aiMsg.id), {
+              ...aiMsg,
+              time: aiMsg.time || new Date().toISOString()
+            });
+          }
+
           setChatLoading(false);
-          // Đồng bộ lại sau 1.5s để cập nhật phản hồi của AI Bot nếu có tag
-          setTimeout(() => {
-            fetchDataSilent();
-          }, 1500);
           return;
         }
       } catch (apiErr) {
@@ -1054,6 +1166,29 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
         const res = await fetch("/api/chat/clean", { method: "POST" });
         const data = await res.json();
         if (data.success && data.chatMessages) {
+          // Xóa tin nhắn trong phòng này trên Firestore
+          try {
+            const querySnapshot = await getDocs(collection(firestoreDb, "chat_rooms", activeRoom, "messages"));
+            const batch = writeBatch(firestoreDb);
+            querySnapshot.forEach((d) => {
+              batch.delete(d.ref);
+            });
+            await batch.commit();
+
+            // Ghi nhận tin nhắn chào phòng mới
+            const initDoc = doc(firestoreDb, "chat_rooms", activeRoom, "messages", "MSG_INIT_1");
+            await setDoc(initDoc, {
+              id: "MSG_INIT_1",
+              senderId: "ADMIN",
+              senderName: "Thầy Nguyễn Trọng Nghĩa",
+              senderRole: "Teacher",
+              content: "Phòng chat đã được giảng viên dọn dẹp và khởi tạo lại sạch sẽ! Chúc các em học tập vui vẻ! 🎯📚",
+              time: new Date().toISOString(),
+              room: activeRoom
+            });
+          } catch (fireErr) {
+            console.error("Lỗi dọn Firestore Chat:", fireErr);
+          }
           setChatMessages(data.chatMessages);
           return;
         }
@@ -1869,6 +2004,17 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
                         />
                       </div>
 
+                      <div>
+                        <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">Địa chỉ Email (Google Account email)</label>
+                        <input
+                          type="email"
+                          value={addStudentEmail}
+                          onChange={(e) => setAddStudentEmail(e.target.value)}
+                          placeholder="Ví dụ: hocsinh@gmail.com"
+                          className="w-full text-xs bg-white border border-slate-200 rounded-xl py-2 px-3 focus:outline-none focus:border-indigo-500 font-mono"
+                        />
+                      </div>
+
                       <div className="grid grid-cols-2 gap-4">
                         <div>
                           <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">Mã Lớp học</label>
@@ -2567,8 +2713,11 @@ Kính gửi **Thầy Nguyễn Trọng Nghĩa**, trợ lý AI cung cấp báo cá
                                       <span className={`font-bold ${isTeacher ? 'text-amber-600' : 'text-slate-600'}`}>
                                         {msg.senderName}
                                       </span>
-                                      {isTeacher && !isBot && (
+                                      {isTeacher && !isBot && msg.senderRole !== "Admin" && (
                                         <span className="px-1.5 py-0.2 bg-amber-100 text-amber-800 rounded font-bold scale-95 uppercase text-[8px]">Thầy</span>
+                                      )}
+                                      {msg.senderRole === "Admin" && (
+                                        <span className="px-1.5 py-0.2 bg-rose-100 text-rose-800 rounded font-bold scale-95 uppercase text-[8px]">Admin</span>
                                       )}
                                       {isBot && (
                                         <span className="px-1.5 py-0.2 bg-indigo-100 text-indigo-800 rounded font-bold scale-95 flex items-center gap-0.5 text-[8px]">
