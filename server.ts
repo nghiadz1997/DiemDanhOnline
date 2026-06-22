@@ -135,6 +135,9 @@ let chatMessages: ChatMessage[] = [
 ];
 
 // Helper lưu dữ liệu ra file backup trên Server và sync lên Firestore
+let lastLoadedTime = 0;
+const CACHE_TTL_MS = 10000; // 10 giây cache mượt mà tránh Race Condition
+
 async function saveServerData() {
   try {
     const data = {
@@ -153,13 +156,19 @@ async function saveServerData() {
       await docRef.set(data);
       console.log("--> Đã đồng bộ thành công trạng thái mới lên Firestore!");
     }
+    lastLoadedTime = Date.now(); // Cập nhật mốc đã lưu mới nhất
   } catch (err) {
     console.warn("Lỗi lưu file database.json backup / Firestore:", err);
   }
 }
 
 // Helper tải dữ liệu từ file backup trên Server và đồng bộ đè từ Firestore hỏa tốc
-async function loadServerData() {
+async function loadServerData(force = false) {
+  const now = Date.now();
+  if (!force && (now - lastLoadedTime < CACHE_TTL_MS)) {
+    // Sử dụng RAM cache, ngăn chặn đa luồng bất đồng bộ đè ghi hỏng dữ liệu
+    return;
+  }
   try {
     // 1. Tìm bản lưu cục bộ trước làm mốc cơ sở
     if (fs.existsSync(DB_FILE)) {
@@ -207,31 +216,28 @@ async function loadServerData() {
         await docRef.set(data);
       }
     }
+    lastLoadedTime = now;
   } catch (err) {
     console.warn("Lỗi đọc file database.json backup / Firestore:", err);
   }
 }
 
 // Tự động nạp dữ liệu khi bật máy chủ
-loadServerData();
-
-// Middleware phục hồi và đồng bộ dữ liệu đè từ Firestore/database.json trước khi xử lý mọi request API chính thức để tránh Race Condition hoặc mất đồng bộ bất kỳ
-app.use(async (req, res, next) => {
-  if (req.path.startsWith("/api") && req.path !== "/api/config") {
-    try {
-      await loadServerData();
-    } catch (err) {
-      console.warn("Middleware loadServerData failed:", err);
-    }
-  }
-  next();
-});
+loadServerData(true); // Buộc tải lần đầu tiên khi khởi động server
 
 let googleScriptUrl = process.env.GOOGLE_SCRIPT_URL || "";
+
+let lastSheetSyncTime = 0;
 
 // Đồng bộ hóa với Google Sheets qua Google Apps Script Web App
 async function syncFromGoogleSheets() {
   if (!googleScriptUrl) return;
+  const now = Date.now();
+  // Chỉ đồng bộ tối đa 1 lần mỗi 45 giây để tránh quá tải quota Google Apps Script và nâng cao hiệu suất
+  if (now - lastSheetSyncTime < 45000) {
+    return;
+  }
+  lastSheetSyncTime = now;
   try {
     const res = await fetch(googleScriptUrl, {
       method: "POST",
@@ -354,10 +360,9 @@ app.post("/api/config", async (req, res) => {
 
 // 1. Lấy toàn bộ dữ liệu hiện tại
 app.get("/api/data", async (req, res) => {
-  await loadServerData();
-  if (googleScriptUrl) {
-    await syncFromGoogleSheets();
-  }
+  await loadServerData(); // Tải dữ liệu bằng bộ nhớ cache tối ưu (không nghẽn DB)
+  
+  // Trả về dữ liệu ngay lập tức để tránh làm đơ client, không lo tụt sang Offline Mode
   res.json({
     users,
     attendanceSessions,
@@ -366,6 +371,13 @@ app.get("/api/data", async (req, res) => {
     submissions,
     chatMessages
   });
+
+  // Chạy đồng bộ Google Sheets ngầm ở background, không khóa luồng hồi đáp
+  if (googleScriptUrl) {
+    syncFromGoogleSheets().catch(err => {
+      console.warn("Đồng bộ Sheets nền thất bại:", err);
+    });
+  }
 });
 
 // Endpoint đăng nhập tài khoản hệ thống (Giảng viên hoặc Học sinh)

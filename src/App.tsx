@@ -197,20 +197,26 @@ export default function App() {
       if (!parseSuccess) {
         // Chạy Local Fallback
         setIsOfflineMode(true);
-        const ldb = getLocalDB();
-        setDb(ldb);
-        if (ldb.assignments && ldb.assignments.length > 0 && !selectedAsmId) {
-          setSelectedAsmId(ldb.assignments[0].id);
-        }
+        setDb(prev => {
+          if (prev && prev.users && prev.users.length > 1) return prev;
+          const ldb = getLocalDB();
+          if (ldb.assignments && ldb.assignments.length > 0 && !selectedAsmId) {
+            setSelectedAsmId(ldb.assignments[0].id);
+          }
+          return ldb;
+        });
       }
     } catch (err) {
       console.warn("Không kết nối được server, chuyển sang Chế độ Offline Standalone.", err);
       setIsOfflineMode(true);
-      const ldb = getLocalDB();
-      setDb(ldb);
-      if (ldb.assignments && ldb.assignments.length > 0 && !selectedAsmId) {
-        setSelectedAsmId(ldb.assignments[0].id);
-      }
+      setDb(prev => {
+        if (prev && prev.users && prev.users.length > 1) return prev;
+        const ldb = getLocalDB();
+        if (ldb.assignments && ldb.assignments.length > 0 && !selectedAsmId) {
+          setSelectedAsmId(ldb.assignments[0].id);
+        }
+        return ldb;
+      });
     } finally {
       setLoading(false);
     }
